@@ -1,50 +1,28 @@
+import math
+from abc import abstractmethod
 from pathlib import Path
 from typing import List, Dict
 
-import tensorflow as tf
 import numpy as np
+import tensorflow as tf
 from tensorflow.contrib.layers import xavier_initializer
 
 
-class McnnModel:
+class Model:
 
-    def __init__(self, batch_size: int, downsample_strides: List[int], smoothing_window_sizes: List[int],
-                 pooling_factor: int, channel_count: int, local_filter_width: int, full_filter_width: int,
-                 layer_size: int, full_pool_size: int, num_classes: int, learning_rate: float, sample_length: int):
-
-        if channel_count % len(smoothing_window_sizes) != 0:
-            raise ValueError('channel_count must be a multiple of number of smoothing window sizes')
-
-        if channel_count % len(downsample_strides) != 0:
-            raise ValueError('channel_count must be a multiple of number of downsamples')
+    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
+        self.global_step = tf.Variable(0, name='global_step', trainable=False)
 
         self.batch_size = batch_size
         self.sample_length = sample_length
+        self.num_classes = num_classes
         self.input = tf.placeholder(tf.float32, shape=(None, sample_length), name='input')
-        dynamic_batch_size = tf.shape(self.input)[0]
+        self.dynamic_batch_size = tf.shape(self.input)[0]
         self.labels = tf.placeholder(tf.int64, shape=(None,), name='labels')
 
-        input_2d = tf.reshape(self.input, shape=(dynamic_batch_size, 1, sample_length, 1))
+        input_2d = tf.reshape(self.input, shape=(self.dynamic_batch_size, 1, sample_length, 1))
 
-        with tf.variable_scope('local'):
-            local_outputs = [
-                self._local_convolve(input_2d, local_filter_width, channel_count, pooling_factor),
-                self._local_smoothed_convolve(input_2d, local_filter_width, channel_count, smoothing_window_sizes,
-                                              pooling_factor),
-                self._local_downsampled_convolve(input_2d, local_filter_width, channel_count, downsample_strides,
-                                                 pooling_factor)
-            ]
-            local_output = tf.concat(local_outputs, axis=-1, name='local_concat')
-
-        with tf.variable_scope('full'):
-            full_convolved = self._full_convolve(local_output, 3 * channel_count,
-                                                 channel_count, full_filter_width, full_pool_size)
-            sequence_length = pooling_factor // full_pool_size
-            full_convolved_reshaped = tf.reshape(full_convolved, shape=(dynamic_batch_size, -1))
-            connected = self._full_fullyconnected(full_convolved_reshaped, channel_count * sequence_length,
-                                                  layer_size, tf.nn.relu)
-            self.logits = self._full_fullyconnected(connected, layer_size, num_classes)
-            self.logits = tf.identity(self.logits, name='logits')
+        self.logits = self._create_network(input_2d)
 
         with tf.variable_scope('training'):
             cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
@@ -52,7 +30,6 @@ class McnnModel:
             self.loss = tf.reduce_mean(cross_entropy, name='crossentropy_mean')
             tf.summary.scalar('loss', self.loss)
             optimizer = tf.train.RMSPropOptimizer(learning_rate)
-            self.global_step = tf.Variable(0, name='global_step', trainable=False)
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
 
         with tf.variable_scope('evaluation'):
@@ -63,6 +40,10 @@ class McnnModel:
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
         self.saver = tf.train.Saver()
+
+    @abstractmethod
+    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError()
 
     def create(self, session: tf.Session):
         print('Created model with fresh parameters.')
@@ -118,6 +99,104 @@ class McnnModel:
         return results
 
     @classmethod
+    def _full_fullyconnected(cls, input: tf.Tensor, input_size: int, layer_size: int, activation=None) -> tf.Tensor:
+        with tf.variable_scope(None, 'fullyconnected'):
+            weight = tf.get_variable('weight', shape=(input_size, layer_size), dtype=tf.float32,
+                                     initializer=xavier_initializer())
+            bias = tf.get_variable('bias', shape=(layer_size,), dtype=tf.float32,
+                                   initializer=tf.constant_initializer(0.0))
+            output = tf.matmul(input, weight)
+            output = tf.nn.bias_add(output, bias)
+            if activation:
+                output = activation(output, name='activation')
+
+        return output
+
+
+class McnnConfiguration():
+
+    def __init__(self, downsample_strides: List[int], smoothing_window_sizes: List[int],
+                 pooling_factor: int, channel_count: int, local_filter_width: int, full_filter_width: int,
+                 layer_size: int, full_pool_size: int):
+        self.local_filter_width = local_filter_width
+        self.channel_count = channel_count
+        self.pooling_factor = pooling_factor
+        self.local_filter_width = local_filter_width
+        self.smoothing_window_sizes = smoothing_window_sizes
+        self.downsample_strides = downsample_strides
+        self.full_pool_size = full_pool_size
+        self.full_filter_width = full_filter_width
+        self.layer_size = layer_size
+
+
+class AutoCnnModel(Model):
+    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, filter_width: int, batch_size: int):
+        self.filter_width = filter_width
+        super().__init__(sample_length, learning_rate, num_classes, batch_size)
+
+    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+        output = input_2d
+
+        for layer_index in range(int(math.log2(self.sample_length))):
+            with tf.variable_scope('conv_{}'.format(layer_index)):
+                channels_in = 1 if layer_index == 0 else 256
+                channels_out = 256
+                filter = tf.get_variable('filter', shape=(1, self.filter_width, channels_in, channels_out),
+                                         dtype=tf.float32, initializer=xavier_initializer())
+                bias = tf.get_variable('bias', shape=(channels_out,), dtype=tf.float32,
+                                       initializer=tf.constant_initializer(0.0))
+                output = tf.nn.conv2d(output, filter, strides=[1, 1, 2, 1], padding='SAME')
+                output = tf.nn.bias_add(output, bias)
+                output = tf.nn.relu(output, name='relu')
+
+        output = tf.reshape(output, shape=(self.dynamic_batch_size, -1))
+        output = self._full_fullyconnected(output, 512, 256, activation=tf.nn.relu)
+        logits = self._full_fullyconnected(output, 256, self.num_classes)
+        logits = tf.identity(logits, name='logits')
+
+        return logits
+
+
+class McnnModel(Model):
+
+    def __init__(self, batch_size: int, learning_rate: float, sample_length: int,
+                 mcnn_configuration: McnnConfiguration, num_classes: int):
+
+        self.cfg = mcnn_configuration
+
+        if self.cfg.channel_count % len(self.cfg.smoothing_window_sizes) != 0:
+            raise ValueError('channel_count must be a multiple of number of smoothing window sizes')
+
+        if self.cfg.channel_count % len(self.cfg.downsample_strides) != 0:
+            raise ValueError('channel_count must be a multiple of number of downsamples')
+
+        super().__init__(sample_length, learning_rate, num_classes, batch_size)
+
+    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+
+        with tf.variable_scope('local'):
+            local_outputs = [
+                self._local_convolve(input_2d, self.cfg.local_filter_width, self.cfg.channel_count, self.cfg.pooling_factor),
+                self._local_smoothed_convolve(input_2d, self.cfg.local_filter_width, self.cfg.channel_count,
+                                              self.cfg.smoothing_window_sizes, self.cfg.pooling_factor),
+                self._local_downsampled_convolve(input_2d, self.cfg.local_filter_width, self.cfg.channel_count,
+                                                 self.cfg.downsample_strides, self.cfg.pooling_factor)
+            ]
+            local_output = tf.concat(local_outputs, axis=-1, name='local_concat')
+
+        with tf.variable_scope('full'):
+            full_convolved = self._full_convolve(local_output, 3 * self.cfg.channel_count,
+                                                 self.cfg.channel_count, self.cfg.full_filter_width, self.cfg.full_pool_size)
+            sequence_length = self.cfg.pooling_factor // self.cfg.full_pool_size
+            full_convolved_reshaped = tf.reshape(full_convolved, shape=(self.dynamic_batch_size, -1))
+            connected = self._full_fullyconnected(full_convolved_reshaped, self.cfg.channel_count * sequence_length,
+                                                  self.cfg.layer_size, tf.nn.relu)
+            logits = self._full_fullyconnected(connected, self.cfg.layer_size, self.num_classes)
+            logits = tf.identity(logits, name='logits')
+
+        return logits
+
+    @classmethod
     def _full_convolve(cls, input: tf.Tensor, channels_in: int, channels_out: int,
                        filter_width: int, pooling: int) -> tf.Tensor:
         with tf.variable_scope('conv'):
@@ -130,20 +209,6 @@ class McnnModel:
             output = tf.nn.relu(output, name='relu')
             size = [1, 1, pooling, 1]
             output = tf.nn.max_pool(output, ksize=size, strides=size, padding='SAME', name='maxpool')
-
-        return output
-
-    @classmethod
-    def _full_fullyconnected(cls, input: tf.Tensor, input_size: int, layer_size: int, activation=None) -> tf.Tensor:
-        with tf.variable_scope(None, 'fullyconnected'):
-            weight = tf.get_variable('weight', shape=(input_size, layer_size), dtype=tf.float32,
-                                     initializer=xavier_initializer())
-            bias = tf.get_variable('bias', shape=(layer_size,), dtype=tf.float32,
-                                   initializer=tf.constant_initializer(0.0))
-            output = tf.matmul(input, weight)
-            output = tf.nn.bias_add(output, bias)
-            if activation:
-                output = activation(output, name='activation')
 
         return output
 

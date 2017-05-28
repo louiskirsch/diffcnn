@@ -7,11 +7,11 @@ import itertools
 
 import matplotlib.pyplot as plt
 
-from mcnn.model import McnnModel
+from mcnn.model import Model
 from mcnn.samples import Dataset
 
 
-def _evaluate_batch(session: tf.Session, model: McnnModel, input: np.ndarray, labels: np.ndarray):
+def _evaluate_batch(session: tf.Session, model: Model, input: np.ndarray, labels: np.ndarray):
     feed_dict = {
         model.input: input,
         model.labels: labels
@@ -21,7 +21,38 @@ def _evaluate_batch(session: tf.Session, model: McnnModel, input: np.ndarray, la
     print('[Test]  Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
 
 
-def train(model: McnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
+def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path,
+             feature_name: str):
+
+    with tf.Session() as session:
+
+        model.restore(session, checkpoint_dir)
+        model.setup_summary_writer(session, log_dir)
+
+        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False)
+
+        sample_total_count = 0
+        correct_total_count = 0
+        batches_count = 0
+        loss_sum = 0
+        for input, labels in test_sample_generator:
+            feed_dict = {
+                model.input: input,
+                model.labels: labels
+            }
+            global_step, loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True,
+                                                          update_summary=True)
+            sample_total_count += input.shape[0]
+            correct_total_count += correct_count
+            batches_count +=1
+            loss_sum += loss
+        accuracy = correct_total_count / sample_total_count
+        loss = loss_sum / batches_count
+        print('[Test] Loss {:.2f} Accuracy {:.2f}%'.format(loss, accuracy * 100))
+        return accuracy
+
+
+def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
           steps_per_checkpoint: int, feature_name: str, save: bool = True):
 
     if not checkpoint_dir.exists():
@@ -34,10 +65,12 @@ def train(model: McnnModel, dataset: Dataset, step_count: int, checkpoint_dir: P
         model.restore_or_create(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
 
-        train_sample_generator = dataset.batch_train_generator(feature_name, model.batch_size, model.sample_length)
+        train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
+                                                        sample_length=model.sample_length, loop=True)
         train_sample_iterator = iter(train_sample_generator)
 
-        test_sample_generator = dataset.batch_test_generator(feature_name, model.batch_size, model.sample_length)
+        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name,
+                                                       sample_length=model.sample_length, loop=True)
         test_sample_iterator = iter(test_sample_generator)
 
         for train_step in range(step_count):
@@ -60,7 +93,7 @@ def train(model: McnnModel, dataset: Dataset, step_count: int, checkpoint_dir: P
                 model.step(session, feed_dict, train=True)
 
 
-def deconv(model: McnnModel, dataset: Dataset, sample_count: int, checkpoint_dir: Path, feature_name: str):
+def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Path, feature_name: str):
     from cnnvis.deconv import Deconvolutionizer
 
     with tf.Session() as session:
@@ -68,7 +101,8 @@ def deconv(model: McnnModel, dataset: Dataset, sample_count: int, checkpoint_dir
         model.restore(session, checkpoint_dir)
         deconvolutionizer = Deconvolutionizer(session, model.input, model.batch_size)
 
-        train_sample_generator = dataset.batch_train_generator(feature_name, model.batch_size, model.sample_length)
+        train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
+                                                        sample_length=model.sample_length, loop=False)
 
         samples = list(itertools.islice(train_sample_generator, sample_count // model.batch_size))
 
