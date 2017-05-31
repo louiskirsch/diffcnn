@@ -7,7 +7,7 @@ import itertools
 
 import matplotlib.pyplot as plt
 
-from mcnn.model import Model
+from mcnn.model import Model, MutatingCnnModel
 from mcnn.samples import Dataset
 
 
@@ -91,6 +91,54 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                     print('Model saved')
             else:
                 model.step(session, feed_dict, train=True)
+
+
+def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
+                     steps_per_checkpoint: int, feature_name: str):
+
+    if not checkpoint_dir.exists():
+        checkpoint_dir.mkdir(parents=True)
+    if not log_dir.exists():
+        log_dir.mkdir(parents=True)
+
+    train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
+                                                    sample_length=model.sample_length, loop=True)
+    train_sample_iterator = iter(train_sample_generator)
+
+    test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name,
+                                                   sample_length=model.sample_length, loop=True)
+    test_sample_iterator = iter(test_sample_generator)
+
+    steps_left = step_count
+
+    while steps_left > 0:
+        with tf.Session() as session:
+            model.restore_or_create(session, checkpoint_dir)
+            model.setup_summary_writer(session, log_dir)
+            iterate_step_count = min(steps_left, steps_per_checkpoint)
+
+            for step in range(iterate_step_count):
+                input, labels = next(train_sample_iterator)
+                feed_dict = {
+                    model.input: input,
+                    model.labels: labels
+                }
+                if step < iterate_step_count - 1:
+                    model.step(session, feed_dict, train=True)
+                else:
+                    global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
+                                                                     correct_count=True, update_summary=True)
+                    accuracy = correct_count / model.batch_size
+                    print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
+                    _evaluate_batch(session, model, *next(test_sample_iterator))
+                    model.mutate_random_uniform()
+                    print('Model mutated')
+                    model.save(session, checkpoint_dir)
+                    print('Model saved')
+
+        model.build()
+        print('Model rebuilt')
+        steps_left -= iterate_step_count
 
 
 def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Path, feature_name: str):

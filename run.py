@@ -3,7 +3,7 @@ import tensorflow as tf
 import yaml
 
 import mcnn.operations as operations
-from mcnn.model import McnnModel, McnnConfiguration, Model, AutoCnnModel
+from mcnn.model import McnnModel, McnnConfiguration, Model, AutoCnnModel, MutatingCnnModel
 from mcnn.samples import HorizontalDataset, Dataset
 
 
@@ -38,29 +38,39 @@ def create_auto_cnn(dataset: HorizontalDataset) -> Model:
     return model
 
 
-def evaluate(model: Model, dataset: Dataset, dataset_name: str):
-    return operations.evaluate(model,
-                               dataset,
-                               checkpoint_dir=Path('checkpoints') / dataset_name,
-                               log_dir=Path('logs') / dataset_name,
-                               feature_name='')
+def create_mutating_cnn(dataset: HorizontalDataset) -> MutatingCnnModel:
+    model = MutatingCnnModel(batch_size=64,
+                             num_classes=dataset.target_classes_count,
+                             learning_rate=1e-3,
+                             sample_length=dataset.sample_length)
+    return model
 
 
-def train(model: Model, dataset: Dataset, dataset_name: str):
+def train(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
     operations.train(model,
                      dataset,
                      step_count=500,
-                     checkpoint_dir=Path('checkpoints') / dataset_name,
-                     log_dir=Path('logs') / dataset_name,
+                     checkpoint_dir=checkpoint_dir,
+                     log_dir=log_dir,
                      steps_per_checkpoint=100,
                      feature_name='')
 
 
-def visualize(model: Model, dataset: Dataset, dataset_name: str):
+def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
+    operations.train_and_mutate(model,
+                                dataset,
+                                step_count=500,
+                                checkpoint_dir=checkpoint_dir,
+                                log_dir=log_dir,
+                                steps_per_checkpoint=100,
+                                feature_name='')
+
+
+def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
     operations.deconv(model,
                       dataset,
                       sample_count=1000,
-                      checkpoint_dir=Path('checkpoints') / dataset_name,
+                      checkpoint_dir=checkpoint_dir,
                       feature_name='')
 
 
@@ -70,18 +80,19 @@ def main():
     accuracies = dict()
 
     for dataset_path in root.iterdir():
-        with tf.Graph().as_default():
-            dataset_name = dataset_path.name
+        dataset_name = dataset_path.name
+        checkpoint_dir = Path('checkpoints') / dataset_name
+        log_dir = Path('logs') / dataset_name
 
-            dataset = HorizontalDataset(root / dataset_name / (dataset_name + '_TRAIN'),
-                                        root / dataset_name / (dataset_name + '_TEST'))
+        dataset = HorizontalDataset(root / dataset_name / (dataset_name + '_TRAIN'),
+                                    root / dataset_name / (dataset_name + '_TEST'))
 
-            model = create_auto_cnn(dataset)
-            train(model, dataset, dataset_name)
-            accuracy = evaluate(model, dataset, dataset_name)
-            accuracies[dataset_name] = accuracy
-            with open('accuracies.yml', 'w') as outfile:
-                yaml.dump(accuracies, outfile, default_flow_style=False)
+        model = create_mutating_cnn(dataset)
+        train_and_mutate(model, dataset, checkpoint_dir, log_dir)
+        accuracy = operations.evaluate(model, dataset, checkpoint_dir, log_dir, feature_name='')
+        accuracies[dataset_name] = accuracy
+    with open('accuracies.yml', 'w') as outfile:
+        yaml.dump(accuracies, outfile, default_flow_style=False)
 
 
 if __name__ == '__main__':

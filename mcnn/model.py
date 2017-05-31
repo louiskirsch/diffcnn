@@ -1,7 +1,9 @@
 import math
-from abc import abstractmethod
+import random
+import uuid
+from abc import abstractmethod, abstractproperty
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Set
 
 import numpy as np
 import tensorflow as tf
@@ -11,16 +13,23 @@ from tensorflow.contrib.layers import xavier_initializer
 class Model:
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
-        self.global_step = tf.Variable(0, name='global_step', trainable=False)
-
         self.batch_size = batch_size
         self.sample_length = sample_length
         self.num_classes = num_classes
-        self.input = tf.placeholder(tf.float32, shape=(None, sample_length), name='input')
+        self.learning_rate = learning_rate
+        self.build()
+
+    # noinspection PyAttributeOutsideInit
+    def build(self):
+        tf.reset_default_graph()
+
+        self.global_step = tf.Variable(0, name='global_step', trainable=False)
+
+        self.input = tf.placeholder(tf.float32, shape=(None, self.sample_length), name='input')
         self.dynamic_batch_size = tf.shape(self.input)[0]
         self.labels = tf.placeholder(tf.int64, shape=(None,), name='labels')
 
-        input_2d = tf.reshape(self.input, shape=(self.dynamic_batch_size, 1, sample_length, 1))
+        input_2d = tf.reshape(self.input, shape=(self.dynamic_batch_size, 1, self.sample_length, 1))
 
         self.logits = self._create_network(input_2d)
 
@@ -29,7 +38,7 @@ class Model:
                                                                            name='crossentropy')
             self.loss = tf.reduce_mean(cross_entropy, name='crossentropy_mean')
             tf.summary.scalar('loss', self.loss)
-            optimizer = tf.train.RMSPropOptimizer(learning_rate)
+            optimizer = tf.train.RMSPropOptimizer(self.learning_rate)
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
 
         with tf.variable_scope('evaluation'):
@@ -39,6 +48,9 @@ class Model:
         self.init = tf.global_variables_initializer()
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
+        self._create_saver()
+
+    def _create_saver(self):
         self.saver = tf.train.Saver()
 
     @abstractmethod
@@ -127,6 +139,239 @@ class McnnConfiguration():
         self.full_pool_size = full_pool_size
         self.full_filter_width = full_filter_width
         self.layer_size = layer_size
+
+
+class Node:
+
+    def __init__(self, parents: List):
+        self.children = []
+        self.parents = list(parents)
+        for node in parents:
+            node.children.append(self)
+        self.output_tensor = None
+        self._update_uuid()
+
+    def _update_uuid(self):
+        self.uuid = str(uuid.uuid4())
+
+    def add_parent(self, parent):
+        self.parents.append(parent)
+        parent.children.append(self)
+
+    def _concat(self, tensors: List[tf.Tensor]) -> tf.Tensor:
+        if len(tensors) == 0:
+            return tensors[0]
+        time_lengths = [tensor.get_shape().as_list()[2] for tensor in tensors]
+        min_time_length = min(time_lengths)
+
+        resized_tensors = []
+        for tensor, time_length in zip(tensors, time_lengths):
+            # TODO pad instead of max pool if stride = 2
+            if time_length > min_time_length:
+                ksize_time = int(round(time_length / min_time_length, ndigits=0))
+                kernel_size = [1, 1, ksize_time, 1]
+                tensor = tf.nn.max_pool(tensor, ksize=kernel_size, strides=kernel_size, padding='SAME')
+            resized_tensors.append(tensor)
+
+        return tf.concat(resized_tensors, axis=-1)
+
+    def save_variables(self, session: tf.Session):
+        pass
+
+    def restore_variables(self, session: tf.Session):
+        pass
+
+    def reset(self):
+        self.output_tensor = None
+
+    def all_descendants(self, visited: Set = None) -> Set:
+        if visited is None:
+            visited = set()
+        visited.add(self)
+        for child in self.children:
+            if child not in visited:
+                child.all_descendants(visited)
+        return visited
+
+    def is_buildable(self) -> bool:
+        return all(parent.output_tensor is not None for parent in self.parents)
+
+    def is_built(self) -> bool:
+        return self.output_tensor is not None
+
+    def reset_recursively(self):
+        for node in self.all_descendants():
+            node.reset()
+
+    def build_recursively(self):
+        if not self.is_buildable() or self.is_built():
+            return
+        self._build()
+        for child in self.children:
+            child.build_recursively()
+
+    def _build(self):
+        pass
+
+
+class InputNode(Node):
+
+    def __init__(self):
+        super().__init__([])
+        # TODO change this if multivariate
+        self.channels_out = 1
+        self._tmp_input = None
+
+    def build_dag(self, input_tensor: tf.Tensor):
+        self._tmp_input = input_tensor
+        self.reset_recursively()
+        self.build_recursively()
+
+    def _build(self):
+        self.output_tensor = self._tmp_input
+        self._tmp_input = None
+
+
+class TerminusNode(Node):
+
+    def __init__(self, parents: List):
+        super().__init__(parents)
+
+    def add_parent(self, parent):
+        # Disallow adding parents to this node to be compatible with fully connected layer
+        pass
+
+    def _build(self):
+        with tf.variable_scope('terminus_node'):
+            self.output_tensor = self._concat([node.output_tensor for node in self.parents])
+
+
+class ConvNode(Node):
+
+    def __init__(self, parents: List):
+        super().__init__(parents)
+        self.stride = random.randint(1, 2)
+        # TODO use 1 here?
+        self.channels_out = 8
+        # TODO how to set this?
+        self.filter_width = 16
+
+        self._saved_filter = None
+        self._saved_bias = None
+        self.reset()
+
+    # noinspection PyAttributeOutsideInit
+    def reset(self):
+        super().reset()
+        self._scope = None
+        self._filter_var = None
+        self._bias_var = None
+        self._filter_query = None
+        self._bias_query = None
+
+    def grow(self):
+        new_conv = ConvNode(self.parents)
+        self.add_parent(new_conv)
+        for child in self.children:
+            child.add_parent(new_conv)
+
+    def _change_var_queries(self, new_parent):
+        with tf.variable_scope(self._scope):
+            channels_in = new_parent.channels_out
+            new_filters = tf.random_normal([1, self.filter_width, channels_in, self.channels_out], stddev=0.35)
+            # Concat at channels_in
+            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-2)
+
+    def save_variables(self, session: tf.Session):
+        if self._scope is None:
+            return
+        self._saved_filter = self._filter_query.eval(session=session)
+        self._saved_bias = self._bias_query.eval(session=session)
+
+    def restore_variables(self, session: tf.Session):
+        if self._scope is None or self._saved_bias is None or self._saved_filter is None:
+            return
+        with tf.variable_scope(self._scope):
+            self._filter_var.assign(self._saved_filter).op.run(session=session)
+            self._bias_var.assign(self._saved_bias).op.run(session=session)
+
+    def add_parent(self, parent):
+        super().add_parent(parent)
+        self._change_var_queries(parent)
+
+    def _build(self):
+        with tf.variable_scope('conv_node_' + self.uuid) as scope:
+            self._scope = scope
+            input_tensor = self._concat([node.output_tensor for node in self.parents])
+
+            channels_in = input_tensor.get_shape()[-1]
+
+            filter = tf.get_variable('filter', shape=(1, self.filter_width, channels_in, self.channels_out),
+                                     dtype=tf.float32, initializer=xavier_initializer())
+            bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
+                                   initializer=tf.constant_initializer(0.0))
+            output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
+            output = tf.nn.bias_add(output, bias)
+            output = tf.nn.relu(output, name='relu')
+
+        self._filter_var = filter
+        self._bias_var = bias
+        self._filter_query = filter
+        self._bias_query = bias
+        self.output_tensor = output
+        return output
+
+
+class MutatingCnnModel(Model):
+    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
+        self.input_node = InputNode()
+        first_conv_node = ConvNode([self.input_node])
+        self.terminus_node = TerminusNode([first_conv_node])
+        super().__init__(sample_length, learning_rate, num_classes, batch_size)
+
+    def mutate_random_uniform(self):
+        nodes = tuple(node for node in self.input_node.all_descendants() if isinstance(node, ConvNode))
+        sample = random.choice(nodes)
+        sample.grow()
+
+    def build(self):
+        if self.input_node is not None:
+            self.input_node.reset_recursively()
+        super().build()
+
+    def restore(self, session: tf.Session, checkpoint_dir: Path):
+        # Init all values first, because not all are saved
+        session.run(self.init)
+        super().restore(session, checkpoint_dir)
+        # TODO save nodes
+        if self.input_node is not None:
+            self.input_node.restore_variables(session)
+
+    def save(self, session: tf.Session, checkpoint_dir: Path):
+        super().save(session, checkpoint_dir)
+        for node in self.input_node.all_descendants():
+            node.save_variables(session)
+
+    def _create_saver(self):
+        # Exclude variables of nodes, those are saved separately
+        vars = [var for var in tf.global_variables() if 'nodes/' not in var.name]
+        self.saver = tf.train.Saver(var_list=vars)
+
+    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+        with tf.variable_scope('nodes'):
+            self.input_node.build_dag(input_2d)
+            output = self.terminus_node.output_tensor
+
+        # TODO maxpool instead?
+        output = tf.reduce_max(output, axis=2, keep_dims=True)
+        num_filters = output.get_shape()[-1]
+
+        output = tf.reshape(output, shape=(self.dynamic_batch_size, -1))
+        output = self._full_fullyconnected(output, num_filters, 256, activation=tf.nn.relu)
+        logits = self._full_fullyconnected(output, 256, self.num_classes)
+        logits = tf.identity(logits, name='logits')
+
+        return logits
 
 
 class AutoCnnModel(Model):
