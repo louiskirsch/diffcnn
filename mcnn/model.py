@@ -7,6 +7,7 @@ from typing import List, Dict, Set
 
 import numpy as np
 import tensorflow as tf
+import pickle
 from tensorflow.contrib.layers import xavier_initializer
 
 
@@ -151,6 +152,18 @@ class Node:
         self.output_tensor = None
         self._update_uuid()
 
+    def __getstate__(self):
+        return {
+            'children': self.children,
+            'parents': self.parents,
+            'uuid': self.uuid
+        }
+
+    def __setstate__(self, state):
+        self.children = state['children']
+        self.parents = state['parents']
+        self.uuid = state['uuid']
+
     def _update_uuid(self):
         self.uuid = str(uuid.uuid4())
 
@@ -228,7 +241,8 @@ class InputNode(Node):
         self.build_recursively()
 
     def _build(self):
-        self.output_tensor = self._tmp_input
+        with tf.variable_scope('input_node'):
+            self.output_tensor = tf.identity(self._tmp_input, name='reshaped_input')
         self._tmp_input = None
 
 
@@ -247,6 +261,8 @@ class TerminusNode(Node):
 
 
 class ConvNode(Node):
+
+    WEIGHT_COLLECTION = 'CONV_WEIGHT_COLLECTION'
 
     def __init__(self, parents: List):
         super().__init__(parents)
@@ -268,6 +284,21 @@ class ConvNode(Node):
         self._bias_var = None
         self._filter_query = None
         self._bias_query = None
+
+    def __getstate__(self):
+        s = super().__getstate__()
+        s.update({
+            'stride': self.stride,
+            'saved_filter': self._saved_filter,
+            'saved_bias': self._saved_bias
+        })
+        return s
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.stride = state['stride']
+        self._saved_filter = state['saved_filter']
+        self._saved_bias = state['saved_bias']
 
     def grow(self):
         new_conv = ConvNode(self.parents)
@@ -343,7 +374,10 @@ class MutatingCnnModel(Model):
         # Init all values first, because not all are saved
         session.run(self.init)
         super().restore(session, checkpoint_dir)
-        # TODO save nodes
+        nodes_file = (checkpoint_dir / 'nodes.pickle')
+        if self.input_node is None and nodes_file.exists():
+            with nodes_file.open('rb') as infile:
+                self.input_node, self.terminus_node = pickle.load(infile)
         if self.input_node is not None:
             self.input_node.restore_variables(session)
 
@@ -351,6 +385,8 @@ class MutatingCnnModel(Model):
         super().save(session, checkpoint_dir)
         for node in self.input_node.all_descendants():
             node.save_variables(session)
+        with (checkpoint_dir / 'nodes.pickle').open('wb') as outfile:
+            pickle.dump((self.input_node, self.terminus_node), outfile)
 
     def _create_saver(self):
         # Exclude variables of nodes, those are saved separately
