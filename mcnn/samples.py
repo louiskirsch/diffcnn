@@ -65,7 +65,7 @@ class HorizontalDataset(Dataset):
 
     def _generate_samples(self, dataset: pd.DataFrame) -> Tuple[np.ndarray, int]:
         row_count = self.df_train.shape[0]
-        for row_index in range(row_count):
+        for row_index in np.random.permutation(row_count):
             x = dataset.iloc[row_index, 1:].values
             y = self.class_to_id[dataset.iloc[row_index, 0]]
             yield x, y
