@@ -435,13 +435,16 @@ class MutatingCnnModel(Model):
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         loss = super()._define_loss(cross_entropy)
+        tf.summary.scalar('cross_entropy', loss)
         # Calculate L1-norm on outgoing weights
         # TODO maybe try different regularization as defined by Sentiono 1997
         # TODO Idea: take the maximum over axis [0, 1, 2]
         weights = tf.get_collection(ConvNode.WEIGHT_COLLECTION)
-        l1_penalty = tf.add_n([tf.reduce_sum(tf.abs(weight)) for weight in weights])
+        l1 = tf.add_n([tf.reduce_sum(tf.abs(weight)) for weight in weights])
+        l1_penalty = ConvNode.L1_NORM_PENALTY_STRENGTH * l1
+        tf.summary.scalar('l1_penalty', l1_penalty)
         # noinspection PyTypeChecker
-        return loss + (ConvNode.L1_NORM_PENALTY_STRENGTH * l1_penalty)
+        return loss + l1_penalty
 
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         # Init all values first, because not all are saved
