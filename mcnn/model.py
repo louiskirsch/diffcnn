@@ -69,7 +69,7 @@ class Model:
         session.run(self.init)
 
     def setup_summary_writer(self, session: tf.Session, log_dir: Path):
-        self.summary_writer = tf.summary.FileWriter(str(log_dir), graph=session.graph)
+        self.summary_writer = tf.summary.FileWriter(str(log_dir))
 
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         ckpt = tf.train.get_checkpoint_state(str(checkpoint_dir))
