@@ -60,10 +60,10 @@ def train(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
     operations.train_and_mutate(model,
                                 dataset,
-                                step_count=5000,
+                                step_count=10000,
                                 checkpoint_dir=checkpoint_dir,
                                 log_dir=log_dir,
-                                steps_per_checkpoint=100,
+                                steps_per_checkpoint=1000,
                                 feature_name='')
 
 
@@ -81,7 +81,8 @@ def main():
 
     accuracies = dict()
 
-    for dataset_path in root.iterdir():
+    #for dataset_path in root.iterdir():
+    for dataset_path in [root / 'Adiac']:
         dataset_name = dataset_path.name
         checkpoint_dir = Path('checkpoints') / dataset_name
         log_dir_train = Path('logs') / (dataset_name + '_train')

@@ -346,7 +346,7 @@ class ConvNode(Node):
             return
         with tf.variable_scope(self._scope):
             channels_in = self._filter_query.get_shape().as_list()[2]
-            new_filters = tf.random_normal([1, self.filter_width, channels_in, add_channels], stddev=0.35)
+            new_filters = tf.random_normal([1, self.filter_width, channels_in, add_channels], stddev=0.035)
             # Concat at channels_out
             self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
             self.channels_out += add_channels
@@ -368,7 +368,7 @@ class ConvNode(Node):
             return
         with tf.variable_scope(self._scope):
             channels_in = new_parent.channels_out
-            new_filters = tf.random_normal([1, self.filter_width, channels_in, self.channels_out], stddev=0.35)
+            new_filters = tf.random_normal([1, self.filter_width, channels_in, self.channels_out], stddev=0.035)
             # Concat at channels_in
             self._filter_query = tf.concat([self._filter_query, new_filters], axis=-2)
 
