@@ -330,10 +330,27 @@ class ConvNode(Node):
         self.reset()
 
     def grow(self):
+        if self.channels_out < 256 and not any(isinstance(child, TerminusNode) for child in self.children):
+            self._add_out_channels(16)
+        else:
+            self._add_parallel_node()
+
+    def _add_parallel_node(self):
         new_conv = ConvNode(self.parents)
         self.add_parent(new_conv)
         for child in self.children:
             child.add_parent(new_conv)
+
+    def _add_out_channels(self, add_channels: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            channels_in = self._filter_query.get_shape().as_list()[2]
+            new_filters = tf.random_normal([1, self.filter_width, channels_in, add_channels], stddev=0.35)
+            # Concat at channels_out
+            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
+            self.channels_out += add_channels
+        pass
 
     def mutate(self, session: tf.Session):
         count = self._below_del_threshold_count.eval(session=session)
