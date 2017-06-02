@@ -1,5 +1,5 @@
 from pathlib import Path
-import tensorflow as tf
+import logging
 import yaml
 
 import mcnn.operations as operations
@@ -38,11 +38,12 @@ def create_auto_cnn(dataset: HorizontalDataset) -> Model:
     return model
 
 
-def create_mutating_cnn(dataset: HorizontalDataset) -> MutatingCnnModel:
+def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path) -> MutatingCnnModel:
     model = MutatingCnnModel(batch_size=64,
                              num_classes=dataset.target_classes_count,
                              learning_rate=1e-3,
-                             sample_length=dataset.sample_length)
+                             sample_length=dataset.sample_length,
+                             checkpoint_dir=checkpoint_dir)
     return model
 
 
@@ -59,10 +60,10 @@ def train(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
     operations.train_and_mutate(model,
                                 dataset,
-                                step_count=500,
+                                step_count=1000,
                                 checkpoint_dir=checkpoint_dir,
                                 log_dir=log_dir,
-                                steps_per_checkpoint=100,
+                                steps_per_checkpoint=200,
                                 feature_name='')
 
 
@@ -75,6 +76,7 @@ def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     root = Path.home() / 'data' / 'UCR_TS_Archive_2015'
 
     accuracies = dict()
@@ -82,14 +84,15 @@ def main():
     for dataset_path in root.iterdir():
         dataset_name = dataset_path.name
         checkpoint_dir = Path('checkpoints') / dataset_name
-        log_dir = Path('logs') / dataset_name
+        log_dir_train = Path('logs') / (dataset_name + '_train')
+        log_dir_test = Path('logs') / (dataset_name + '_test')
 
         dataset = HorizontalDataset(root / dataset_name / (dataset_name + '_TRAIN'),
                                     root / dataset_name / (dataset_name + '_TEST'))
 
-        model = create_mutating_cnn(dataset)
-        train_and_mutate(model, dataset, checkpoint_dir, log_dir)
-        accuracy = operations.evaluate(model, dataset, checkpoint_dir, log_dir, feature_name='')
+        model = create_mutating_cnn(dataset, checkpoint_dir)
+        train_and_mutate(model, dataset, checkpoint_dir, log_dir_train)
+        accuracy = operations.evaluate(model, dataset, checkpoint_dir, log_dir_test, feature_name='')
         accuracies[dataset_name] = accuracy
     with open('accuracies.yml', 'w') as outfile:
         yaml.dump(accuracies, outfile, default_flow_style=False)

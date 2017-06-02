@@ -4,6 +4,7 @@ import matplotlib.colors
 import tensorflow as tf
 import numpy as np
 import itertools
+import logging
 
 import matplotlib.pyplot as plt
 
@@ -88,7 +89,7 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                 _evaluate_batch(session, model, *next(test_sample_iterator))
                 if save:
                     model.save(session, checkpoint_dir)
-                    print('Model saved')
+                    logging.info('Model saved')
             else:
                 model.step(session, feed_dict, train=True)
 
@@ -117,6 +118,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
             model.setup_summary_writer(session, log_dir)
             iterate_step_count = min(steps_left, steps_per_checkpoint)
 
+            logging.info('Started training')
             for step in range(iterate_step_count):
                 input, labels = next(train_sample_iterator)
                 feed_dict = {
@@ -131,13 +133,13 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     accuracy = correct_count / model.batch_size
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
                     _evaluate_batch(session, model, *next(test_sample_iterator))
-                    model.mutate_random_uniform()
-                    print('Model mutated')
+                    model.mutate(session)
+                    logging.info('Model mutated')
                     model.save(session, checkpoint_dir)
-                    print('Model saved')
+                    logging.info('Model saved')
 
         model.build()
-        print('Model rebuilt')
+        logging.info('Model rebuilt')
         steps_left -= iterate_step_count
 
 
@@ -170,7 +172,7 @@ def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Pa
                 model.input: stacked
             }
 
-        print('Visualizing top activations')
+        logging.info('Visualizing top activations')
         reconstructions = deconvolutionizer.visualize_top_activations(create_dict_by_ids, analyze_layers)
 
         color_map = matplotlib.colors.LinearSegmentedColormap.from_list('heat', [(0, 0, 0), (1, 0, 0)])

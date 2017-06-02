@@ -8,6 +8,7 @@ from typing import List, Dict, Set
 import numpy as np
 import tensorflow as tf
 import pickle
+import logging
 from tensorflow.contrib.layers import xavier_initializer
 
 
@@ -37,7 +38,7 @@ class Model:
         with tf.variable_scope('training'):
             cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
                                                                            name='crossentropy')
-            self.loss = tf.reduce_mean(cross_entropy, name='crossentropy_mean')
+            self.loss = self._define_loss(cross_entropy)
             tf.summary.scalar('loss', self.loss)
             optimizer = tf.train.RMSPropOptimizer(self.learning_rate)
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
@@ -45,11 +46,16 @@ class Model:
         with tf.variable_scope('evaluation'):
             correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
             self.correct_count = tf.reduce_sum(tf.cast(correct, tf.int32), name='correct_count')
+            self.accuracy = self.correct_count / self.dynamic_batch_size
+            tf.summary.scalar('accuracy', self.accuracy)
 
         self.init = tf.global_variables_initializer()
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
         self._create_saver()
+
+    def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
+        return tf.reduce_mean(cross_entropy, name='crossentropy_mean')
 
     def _create_saver(self):
         self.saver = tf.train.Saver()
@@ -59,7 +65,7 @@ class Model:
         raise NotImplementedError()
 
     def create(self, session: tf.Session):
-        print('Created model with fresh parameters.')
+        logging.info('Created model with fresh parameters.')
         session.run(self.init)
 
     def setup_summary_writer(self, session: tf.Session, log_dir: Path):
@@ -68,7 +74,7 @@ class Model:
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         ckpt = tf.train.get_checkpoint_state(str(checkpoint_dir))
         if ckpt and ckpt.model_checkpoint_path:
-            print('Reading model parameters from {}'.format(ckpt.model_checkpoint_path))
+            logging.info('Reading model parameters from {}'.format(ckpt.model_checkpoint_path))
             self.saver.restore(session, ckpt.model_checkpoint_path)
         else:
             raise FileNotFoundError('No checkpoint for evaluation found')
@@ -150,6 +156,7 @@ class Node:
         for node in parents:
             node.children.append(self)
         self.output_tensor = None
+        self.max_depth = None
         self._update_uuid()
 
     def __getstate__(self):
@@ -160,6 +167,7 @@ class Node:
         }
 
     def __setstate__(self, state):
+        self.output_tensor = None
         self.children = state['children']
         self.parents = state['parents']
         self.uuid = state['uuid']
@@ -184,6 +192,10 @@ class Node:
                 ksize_time = int(round(time_length / min_time_length, ndigits=0))
                 kernel_size = [1, 1, ksize_time, 1]
                 tensor = tf.nn.max_pool(tensor, ksize=kernel_size, strides=kernel_size, padding='SAME')
+                # in case of bad roundings
+                new_time_length = tensor.get_shape().as_list()[2]
+                if new_time_length > min_time_length:
+                    tensor = tensor[:, :, :min_time_length, ...]
             resized_tensors.append(tensor)
 
         return tf.concat(resized_tensors, axis=-1)
@@ -224,7 +236,10 @@ class Node:
             child.build_recursively()
 
     def _build(self):
-        pass
+        if len(self.parents) == 0:
+            self.max_depth = 0
+        else:
+            self.max_depth = max(p.max_depth for p in self.parents) + 1
 
 
 class InputNode(Node):
@@ -235,12 +250,18 @@ class InputNode(Node):
         self.channels_out = 1
         self._tmp_input = None
 
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.channels_out = 1
+        self._tmp_input = None
+
     def build_dag(self, input_tensor: tf.Tensor):
         self._tmp_input = input_tensor
         self.reset_recursively()
         self.build_recursively()
 
     def _build(self):
+        super()._build()
         with tf.variable_scope('input_node'):
             self.output_tensor = tf.identity(self._tmp_input, name='reshaped_input')
         self._tmp_input = None
@@ -256,6 +277,7 @@ class TerminusNode(Node):
         pass
 
     def _build(self):
+        super()._build()
         with tf.variable_scope('terminus_node'):
             self.output_tensor = self._concat([node.output_tensor for node in self.parents])
 
@@ -263,12 +285,16 @@ class TerminusNode(Node):
 class ConvNode(Node):
 
     WEIGHT_COLLECTION = 'CONV_WEIGHT_COLLECTION'
+    # Parameters from 2016 Miconi
+    NEURONS_BELOW_DEL_THRESHOLD = 1
+    DELETION_THRESHOLD = 0.5        # Originally 0.05
+    L1_NORM_PENALTY_STRENGTH = 1e-4
 
     def __init__(self, parents: List):
         super().__init__(parents)
         self.stride = random.randint(1, 2)
         # TODO use 1 here?
-        self.channels_out = 8
+        self.channels_out = 16
         # TODO how to set this?
         self.filter_width = 16
 
@@ -299,6 +325,9 @@ class ConvNode(Node):
         self.stride = state['stride']
         self._saved_filter = state['saved_filter']
         self._saved_bias = state['saved_bias']
+        self.channels_out = 16
+        self.filter_width = 16
+        self.reset()
 
     def grow(self):
         new_conv = ConvNode(self.parents)
@@ -306,7 +335,20 @@ class ConvNode(Node):
         for child in self.children:
             child.add_parent(new_conv)
 
+    def mutate(self, session: tf.Session):
+        count = self._below_del_threshold_count.eval(session=session)
+        logging.info('{} neurons below del threshold'.format(count))
+        if count < self.NEURONS_BELOW_DEL_THRESHOLD:
+            logging.info('Growing')
+            self.grow()
+        elif count > self.NEURONS_BELOW_DEL_THRESHOLD:
+            logging.info('Would shrink if implemented')
+            # TODO shrink
+            pass
+
     def _change_var_queries(self, new_parent):
+        if self._scope is None:
+            return
         with tf.variable_scope(self._scope):
             channels_in = new_parent.channels_out
             new_filters = tf.random_normal([1, self.filter_width, channels_in, self.channels_out], stddev=0.35)
@@ -331,6 +373,7 @@ class ConvNode(Node):
         self._change_var_queries(parent)
 
     def _build(self):
+        super()._build()
         with tf.variable_scope('conv_node_' + self.uuid) as scope:
             self._scope = scope
             input_tensor = self._concat([node.output_tensor for node in self.parents])
@@ -339,11 +382,18 @@ class ConvNode(Node):
 
             filter = tf.get_variable('filter', shape=(1, self.filter_width, channels_in, self.channels_out),
                                      dtype=tf.float32, initializer=xavier_initializer())
+            tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
             bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
             output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
             output = tf.nn.bias_add(output, bias)
             output = tf.nn.relu(output, name='relu')
+
+            weight_sums = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
+            tf.summary.histogram('outgoing_weight_sums', weight_sums)
+            below_del_threshold = weight_sums < self.DELETION_THRESHOLD
+            self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
+            tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
 
         self._filter_var = filter
         self._bias_var = bias
@@ -354,10 +404,17 @@ class ConvNode(Node):
 
 
 class MutatingCnnModel(Model):
-    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
-        self.input_node = InputNode()
-        first_conv_node = ConvNode([self.input_node])
-        self.terminus_node = TerminusNode([first_conv_node])
+
+    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
+                 checkpoint_dir: Path):
+        nodes_file = (checkpoint_dir / 'nodes.pickle')
+        if nodes_file.exists():
+            with nodes_file.open('rb') as infile:
+                self.input_node, self.terminus_node = pickle.load(infile)
+        else:
+            self.input_node = InputNode()
+            first_conv_node = ConvNode([self.input_node])
+            self.terminus_node = TerminusNode([first_conv_node])
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
     def mutate_random_uniform(self):
@@ -365,19 +422,31 @@ class MutatingCnnModel(Model):
         sample = random.choice(nodes)
         sample.grow()
 
+    def mutate(self, session: tf.Session):
+        conv_nodes = [node for node in self.input_node.all_descendants() if isinstance(node, ConvNode)]
+        for node in conv_nodes:
+            assert node.is_built()
+            node.mutate(session)
+
     def build(self):
         if self.input_node is not None:
             self.input_node.reset_recursively()
         super().build()
 
+    def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
+        loss = super()._define_loss(cross_entropy)
+        # Calculate L1-norm on outgoing weights
+        # TODO maybe try different regularization as defined by Sentiono 1997
+        # TODO Idea: take the maximum over axis [0, 1, 2]
+        weights = tf.get_collection(ConvNode.WEIGHT_COLLECTION)
+        l1_penalty = tf.add_n([tf.reduce_sum(tf.abs(weight)) for weight in weights])
+        # noinspection PyTypeChecker
+        return loss + (ConvNode.L1_NORM_PENALTY_STRENGTH * l1_penalty)
+
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         # Init all values first, because not all are saved
         session.run(self.init)
         super().restore(session, checkpoint_dir)
-        nodes_file = (checkpoint_dir / 'nodes.pickle')
-        if self.input_node is None and nodes_file.exists():
-            with nodes_file.open('rb') as infile:
-                self.input_node, self.terminus_node = pickle.load(infile)
         if self.input_node is not None:
             self.input_node.restore_variables(session)
 
@@ -397,6 +466,9 @@ class MutatingCnnModel(Model):
         with tf.variable_scope('nodes'):
             self.input_node.build_dag(input_2d)
             output = self.terminus_node.output_tensor
+
+        tf.summary.scalar('node_count', len(self.input_node.all_descendants()))
+        tf.summary.scalar('max_depth', self.terminus_node.max_depth - 1)
 
         # TODO maxpool instead?
         output = tf.reduce_max(output, axis=2, keep_dims=True)
