@@ -113,6 +113,7 @@ class Model:
             summary_result = results[-1]
             step = results[0]
             self.summary_writer.add_summary(summary_result, global_step=step)
+            self.summary_writer.add_graph(session.graph, global_step=step)
             return results[:-1]
 
         return results
@@ -132,7 +133,7 @@ class Model:
         return output
 
 
-class McnnConfiguration():
+class McnnConfiguration:
 
     def __init__(self, downsample_strides: List[int], smoothing_window_sizes: List[int],
                  pooling_factor: int, channel_count: int, local_filter_width: int, full_filter_width: int,
@@ -158,6 +159,7 @@ class Node:
         self.output_tensor = None
         self.max_depth = None
         self._update_uuid()
+        self.reset()
 
     def __getstate__(self):
         return {
@@ -167,7 +169,7 @@ class Node:
         }
 
     def __setstate__(self, state):
-        self.output_tensor = None
+        self.reset()
         self.children = state['children']
         self.parents = state['parents']
         self.uuid = state['uuid']
@@ -241,18 +243,32 @@ class Node:
         else:
             self.max_depth = max(p.max_depth for p in self.parents) + 1
 
+    def _get_input_index(self, parent_node) -> int:
+        node_idx = self.parents.index(parent_node)
+        return sum(p.output_count for p in self.parents[:node_idx])
+
+    @abstractproperty
+    @property
+    def output_count(self):
+        raise NotImplementedError()
+
+    @property
+    def input_count(self):
+        return sum(p.output_count for p in self.parents)
+
 
 class InputNode(Node):
 
     def __init__(self):
         super().__init__([])
-        # TODO change this if multivariate
-        self.channels_out = 1
         self._tmp_input = None
+
+    @property
+    def output_count(self):
+        return 1
 
     def __setstate__(self, state):
         super().__setstate__(state)
-        self.channels_out = 1
         self._tmp_input = None
 
     def build_dag(self, input_tensor: tf.Tensor):
@@ -267,40 +283,22 @@ class InputNode(Node):
         self._tmp_input = None
 
 
-class TerminusNode(Node):
+class VariableNode(Node):
 
-    def __init__(self, parents: List):
-        super().__init__(parents)
+    WEIGHT_COLLECTION = 'NODE_WEIGHT_COLLECTION'
 
-    def add_parent(self, parent):
-        # Disallow adding parents to this node to be compatible with fully connected layer
-        pass
-
-    def _build(self):
-        super()._build()
-        with tf.variable_scope('terminus_node'):
-            self.output_tensor = self._concat([node.output_tensor for node in self.parents])
-
-
-class ConvNode(Node):
-
-    WEIGHT_COLLECTION = 'CONV_WEIGHT_COLLECTION'
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
     DELETION_THRESHOLD = 0.5        # Originally 0.05
     L1_NORM_PENALTY_STRENGTH = 1e-4
 
+    DELETE_NODE_THRESHOLD = 8
+    OUTPUT_INCREMENT = 16
+
     def __init__(self, parents: List):
         super().__init__(parents)
-        self.stride = random.randint(1, 2)
-        # TODO use 1 here?
-        self.channels_out = 16
-        # TODO how to set this?
-        self.filter_width = 16
-
         self._saved_filter = None
         self._saved_bias = None
-        self.reset()
 
     # noinspection PyAttributeOutsideInit
     def reset(self):
@@ -310,11 +308,12 @@ class ConvNode(Node):
         self._bias_var = None
         self._filter_query = None
         self._bias_query = None
+        self._below_del_threshold_count = None
+        self._below_del_threshold_indices = None
 
     def __getstate__(self):
         s = super().__getstate__()
         s.update({
-            'stride': self.stride,
             'saved_filter': self._saved_filter,
             'saved_bias': self._saved_bias
         })
@@ -322,35 +321,9 @@ class ConvNode(Node):
 
     def __setstate__(self, state):
         super().__setstate__(state)
-        self.stride = state['stride']
         self._saved_filter = state['saved_filter']
         self._saved_bias = state['saved_bias']
-        self.channels_out = 16
-        self.filter_width = 16
         self.reset()
-
-    def grow(self):
-        if self.channels_out < 256 and not any(isinstance(child, TerminusNode) for child in self.children):
-            self._add_out_channels(16)
-        else:
-            self._add_parallel_node()
-
-    def _add_parallel_node(self):
-        new_conv = ConvNode(self.parents)
-        self.add_parent(new_conv)
-        for child in self.children:
-            child.add_parent(new_conv)
-
-    def _add_out_channels(self, add_channels: int):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            channels_in = self._filter_query.get_shape().as_list()[2]
-            new_filters = tf.random_normal([1, self.filter_width, channels_in, add_channels], stddev=0.035)
-            # Concat at channels_out
-            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
-            self.channels_out += add_channels
-        pass
 
     def mutate(self, session: tf.Session):
         count = self._below_del_threshold_count.eval(session=session)
@@ -359,18 +332,9 @@ class ConvNode(Node):
             logging.info('Growing')
             self.grow()
         elif count > self.NEURONS_BELOW_DEL_THRESHOLD:
-            logging.info('Would shrink if implemented')
-            # TODO shrink
-            pass
-
-    def _change_var_queries(self, new_parent):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            channels_in = new_parent.channels_out
-            new_filters = tf.random_normal([1, self.filter_width, channels_in, self.channels_out], stddev=0.035)
-            # Concat at channels_in
-            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-2)
+            logging.info('Shrinking')
+            deletion_indices = self._below_del_threshold_indices.eval(session=session)
+            self.shrink(deletion_indices)
 
     def save_variables(self, session: tf.Session):
         if self._scope is None:
@@ -384,10 +348,265 @@ class ConvNode(Node):
         with tf.variable_scope(self._scope):
             self._filter_var.assign(self._saved_filter).op.run(session=session)
             self._bias_var.assign(self._saved_bias).op.run(session=session)
+        logging.info('Restored variables for {}'.format(self.uuid))
 
-    def add_parent(self, parent):
-        super().add_parent(parent)
-        self._change_var_queries(parent)
+    def grow(self):
+        self._add_outputs(self.OUTPUT_INCREMENT)
+
+    def shrink(self, deletion_indices: np.ndarray):
+        active_outputs = self.output_count - deletion_indices.shape[0]
+        if active_outputs < self.DELETE_NODE_THRESHOLD:
+            self.delete()
+        else:
+            self._remove_outputs(deletion_indices)
+
+    @abstractmethod
+    def _add_outputs(self, add_outputs_count: int):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def _remove_outputs(self, indices: np.ndarray):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
+        raise NotImplementedError()
+
+    @abstractmethod
+    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
+        raise NotImplementedError()
+
+    def _notify_output_removal(self, indices: np.ndarray):
+        for child in self.children:
+            assert isinstance(child, VariableNode)
+            child._remove_inputs(self, indices)
+
+    def _notify_output_addition(self, add_outputs_count: int):
+        for child in self.children:
+            assert isinstance(child, VariableNode)
+            child._add_inputs(self, add_outputs_count)
+
+    def delete(self):
+        for parent in self.parents:
+            assert isinstance(parent, Node)
+            parent.children.remove(self)
+
+        self._notify_output_removal(np.arange(self.output_count))
+        for child in self.parents:
+            assert isinstance(child, VariableNode)
+            child.parents.remove(self)
+
+    def variable_initialization(self, shape: List[int]):
+        return tf.random_normal(shape, stddev=0.035)
+
+
+class FullyConnectedNode(VariableNode):
+
+    def __init__(self, parents: List, fixed_output_count: int = None, non_linearity: bool = True):
+        super().__init__(parents)
+        self.can_mutate = fixed_output_count is None
+        self.non_linearity = non_linearity
+        self._output_count = fixed_output_count or 16
+
+    @property
+    def output_count(self):
+        return self._output_count
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.can_mutate = state['can_mutate']
+        self._output_count = state['output_count']
+        self.non_linearity = state['non_linearity']
+
+    def __getstate__(self):
+        s = super().__getstate__()
+        s.update({
+            'can_mutate': self.can_mutate,
+            'output_count': self._output_count,
+            'non_linearity': self.non_linearity
+        })
+        return s
+
+    def mutate(self, session: tf.Session):
+        if self.can_mutate:
+            super().mutate(session)
+
+    def _add_outputs(self, add_outputs_count: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            new_weights = self.variable_initialization([self.input_count, add_outputs_count])
+            new_bias = self.variable_initialization([add_outputs_count])
+            # Concat at output_count
+            self._filter_query = tf.concat([self._filter_query, new_weights], axis=-1)
+            self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
+        self._output_count += add_outputs_count
+        self._notify_output_addition(add_outputs_count)
+
+    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            new_weights = self.variable_initialization([add_inputs_count, self._output_count])
+            # TODO using output_count here relies on the fact that the maxpooling op reduces to time_length 1
+            offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
+            new_tensors = [self._filter_query[:offset], new_weights, self._filter_query[offset:]]
+            # Concat at input dimension
+            self._filter_query = tf.concat(new_tensors, axis=0)
+
+    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            deletion_count = indices.shape[0]
+            mask = np.ones([self.input_count + deletion_count], dtype=np.bool_)
+            mask[indices] = 0
+            self._filter_query = tf.boolean_mask(self._filter_query, mask)
+
+    def _remove_outputs(self, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            mask = np.ones([self.output_count], dtype=np.bool_)
+            mask[indices] = 0
+            self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
+            self._bias_query = tf.boolean_mask(self._bias_query, mask)
+        deletion_count = indices.shape[0]
+        self._output_count -= deletion_count
+        self._notify_output_removal(indices)
+
+    def _build(self):
+        super()._build()
+        with tf.variable_scope('fullyconnected_node_' + self.uuid) as scope:
+            self._scope = scope
+            if len(self.parents) > 1:
+                input_tensor = self._concat([node.output_tensor for node in self.parents])
+            else:
+                input_tensor = self.parents[0].output_tensor
+
+            # Pool and reshape if not compatible
+            if input_tensor.get_shape().ndims > 2:
+                # TODO maxpool instead?
+                input_tensor = tf.reduce_max(input_tensor, axis=2, keep_dims=True)
+                batch_size = tf.shape(input_tensor)[0]
+                filter_count = input_tensor.get_shape().as_list()[-1]
+                input_tensor = tf.reshape(input_tensor, shape=(batch_size, filter_count))
+
+            input_size = input_tensor.get_shape()[-1]
+
+            weight = tf.get_variable('weight', shape=(input_size, self._output_count), dtype=tf.float32,
+                                     initializer=xavier_initializer())
+            bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
+                                   initializer=tf.constant_initializer(0.0))
+            output = tf.matmul(input_tensor, weight)
+            output = tf.nn.bias_add(output, bias)
+            if self.non_linearity:
+                output = tf.nn.relu(output, name='activation')
+
+            weight_sums = tf.reduce_sum(tf.abs(weight), axis=0)
+            tf.summary.histogram('outgoing_weight_sums', weight_sums)
+            below_del_threshold = weight_sums < self.DELETION_THRESHOLD
+            self._below_del_threshold_indices = tf.where(below_del_threshold)
+            self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
+            tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
+            tf.summary.scalar('output_count', self.output_count)
+
+        self._filter_var = weight
+        self._bias_var = bias
+        self._filter_query = weight
+        self._bias_query = bias
+        self.output_tensor = output
+        return output
+
+
+class ConvNode(VariableNode):
+
+    FILTER_WIDTH = 16
+    MAX_CHANNELS_OUT = 256
+    NEW_NODE_PROBABILITY = 0.1
+
+    def __init__(self, parents: List):
+        super().__init__(parents)
+        self.stride = random.randint(1, 2)
+        self.channels_out = self.OUTPUT_INCREMENT
+
+    @property
+    def output_count(self):
+        return self.channels_out
+
+    def __getstate__(self):
+        s = super().__getstate__()
+        s.update({
+            'stride': self.stride,
+            'channels_out': self.channels_out,
+        })
+        return s
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.stride = state['stride']
+        self.channels_out = state['channels_out']
+
+    def grow(self):
+        create_new_node_randomly = random.random() < self.NEW_NODE_PROBABILITY
+        if self.channels_out < self.MAX_CHANNELS_OUT and not create_new_node_randomly:
+            super().grow()
+        else:
+            self._create_new_node()
+
+    def _create_new_node(self):
+        new_conv = ConvNode(self.parents)
+        self.add_parent(new_conv)
+        for child in self.children:
+            child.add_parent(new_conv)
+        new_conv._notify_output_addition(new_conv.output_count)
+
+    def _add_outputs(self, add_channels: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            new_filters = self.variable_initialization([1, self.FILTER_WIDTH, self.input_count, add_channels])
+            new_bias = self.variable_initialization([add_channels])
+            # Concat at channels_out
+            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
+            self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
+        self.channels_out += add_channels
+        self._notify_output_addition(add_channels)
+
+    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            new_filters = self.variable_initialization([1, self.FILTER_WIDTH, add_inputs_count, self.channels_out])
+            offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
+            new_tensors = [self._filter_query[:, :, :offset],
+                           new_filters,
+                           self._filter_query[:, :, offset:]]
+            # Concat at input dimension
+            self._filter_query = tf.concat(new_tensors, axis=2)
+
+    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            deletion_count = indices.shape[0]
+            mask = np.ones([self.input_count + deletion_count], dtype=np.bool_)
+            mask[indices] = 0
+            transposed = tf.transpose(self._filter_query, perm=[2, 3, 0, 1])
+            filtered = tf.boolean_mask(transposed, mask)
+            self._filter_query = tf.transpose(filtered, perm=[2, 3, 0, 1])
+
+    def _remove_outputs(self, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            mask = np.ones([self.output_count], dtype=np.bool_)
+            mask[indices] = 0
+            self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
+            self._bias_query = tf.boolean_mask(self._bias_query, mask)
+        deletion_count = indices.shape[0]
+        self.channels_out -= deletion_count
+        self._notify_output_removal(indices)
 
     def _build(self):
         super()._build()
@@ -397,7 +616,7 @@ class ConvNode(Node):
 
             channels_in = input_tensor.get_shape()[-1]
 
-            filter = tf.get_variable('filter', shape=(1, self.filter_width, channels_in, self.channels_out),
+            filter = tf.get_variable('filter', shape=(1, self.FILTER_WIDTH, channels_in, self.channels_out),
                                      dtype=tf.float32, initializer=xavier_initializer())
             tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
             bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
@@ -409,8 +628,10 @@ class ConvNode(Node):
             weight_sums = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
             tf.summary.histogram('outgoing_weight_sums', weight_sums)
             below_del_threshold = weight_sums < self.DELETION_THRESHOLD
+            self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
+            tf.summary.scalar('output_count', self.output_count)
 
         self._filter_var = filter
         self._bias_var = bias
@@ -431,19 +652,18 @@ class MutatingCnnModel(Model):
         else:
             self.input_node = InputNode()
             first_conv_node = ConvNode([self.input_node])
-            self.terminus_node = TerminusNode([first_conv_node])
+            fully_connected_node = FullyConnectedNode([first_conv_node])
+            self.terminus_node = FullyConnectedNode([fully_connected_node], fixed_output_count=num_classes,
+                                                    non_linearity=False)
+
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
-    def mutate_random_uniform(self):
-        nodes = tuple(node for node in self.input_node.all_descendants() if isinstance(node, ConvNode))
-        sample = random.choice(nodes)
-        sample.grow()
-
     def mutate(self, session: tf.Session):
-        conv_nodes = [node for node in self.input_node.all_descendants() if isinstance(node, ConvNode)]
-        for node in conv_nodes:
-            assert node.is_built()
-            node.mutate(session)
+        conv_nodes = [node for node in self.input_node.all_descendants() if isinstance(node, VariableNode)]
+        with tf.variable_scope(self._nodes_scope):
+            for node in conv_nodes:
+                assert node.is_built()
+                node.mutate(session)
 
     def build(self):
         if self.input_node is not None:
@@ -456,9 +676,9 @@ class MutatingCnnModel(Model):
         # Calculate L1-norm on outgoing weights
         # TODO maybe try different regularization as defined by Sentiono 1997
         # TODO Idea: take the maximum over axis [0, 1, 2]
-        weights = tf.get_collection(ConvNode.WEIGHT_COLLECTION)
+        weights = tf.get_collection(VariableNode.WEIGHT_COLLECTION)
         l1 = tf.add_n([tf.reduce_sum(tf.abs(weight)) for weight in weights])
-        l1_penalty = ConvNode.L1_NORM_PENALTY_STRENGTH * l1
+        l1_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * l1
         tf.summary.scalar('l1_penalty', l1_penalty)
         # noinspection PyTypeChecker
         return loss + l1_penalty
@@ -467,8 +687,9 @@ class MutatingCnnModel(Model):
         # Init all values first, because not all are saved
         session.run(self.init)
         super().restore(session, checkpoint_dir)
-        if self.input_node is not None:
-            self.input_node.restore_variables(session)
+        with tf.variable_scope(self._nodes_scope):
+            for node in self.input_node.all_descendants():
+                node.restore_variables(session)
 
     def save(self, session: tf.Session, checkpoint_dir: Path):
         super().save(session, checkpoint_dir)
@@ -483,21 +704,17 @@ class MutatingCnnModel(Model):
         self.saver = tf.train.Saver(var_list=vars)
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
-        with tf.variable_scope('nodes'):
+        with tf.variable_scope('nodes') as scope:
+            self._nodes_scope = scope
             self.input_node.build_dag(input_2d)
             output = self.terminus_node.output_tensor
 
-        tf.summary.scalar('node_count', len(self.input_node.all_descendants()))
-        tf.summary.scalar('max_depth', self.terminus_node.max_depth - 1)
+        nodes = self.input_node.all_descendants()
+        tf.summary.scalar('node_count', len(nodes))
+        tf.summary.scalar('max_depth', self.terminus_node.max_depth)
+        tf.summary.scalar('total_output_count', sum(n.output_count for n in nodes))
 
-        # TODO maxpool instead?
-        output = tf.reduce_max(output, axis=2, keep_dims=True)
-        num_filters = output.get_shape()[-1]
-
-        output = tf.reshape(output, shape=(self.dynamic_batch_size, -1))
-        output = self._full_fullyconnected(output, num_filters, 256, activation=tf.nn.relu)
-        logits = self._full_fullyconnected(output, 256, self.num_classes)
-        logits = tf.identity(logits, name='logits')
+        logits = tf.identity(output, name='logits')
 
         return logits
 
