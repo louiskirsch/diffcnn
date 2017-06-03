@@ -79,9 +79,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
     root = Path.home() / 'data' / 'UCR_TS_Archive_2015'
 
-    accuracies = dict()
-
-    #for dataset_path in root.iterdir():
+    # for dataset_path in root.iterdir():
     for dataset_path in [root / 'Adiac']:
         dataset_name = dataset_path.name
         checkpoint_dir = Path('checkpoints') / dataset_name
@@ -92,11 +90,9 @@ def main():
                                     root / dataset_name / (dataset_name + '_TEST'))
 
         model = create_mutating_cnn(dataset, checkpoint_dir)
-        train_and_mutate(model, dataset, checkpoint_dir, log_dir_train)
-        accuracy = operations.evaluate(model, dataset, checkpoint_dir, log_dir_test, feature_name='')
-        accuracies[dataset_name] = accuracy
-    with open('accuracies.yml', 'w') as outfile:
-        yaml.dump(accuracies, outfile, default_flow_style=False)
+        while True:
+            train_and_mutate(model, dataset, checkpoint_dir, log_dir_train)
+            operations.evaluate(model, dataset, checkpoint_dir, log_dir_test, feature_name='')
 
 
 if __name__ == '__main__':

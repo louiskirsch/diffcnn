@@ -106,10 +106,6 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                                                     sample_length=model.sample_length, loop=True)
     train_sample_iterator = iter(train_sample_generator)
 
-    test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name,
-                                                   sample_length=model.sample_length, loop=True)
-    test_sample_iterator = iter(test_sample_generator)
-
     steps_left = step_count
 
     while steps_left > 0:
@@ -132,7 +128,6 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                                                                      correct_count=True, update_summary=True)
                     accuracy = correct_count / model.batch_size
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
-                    _evaluate_batch(session, model, *next(test_sample_iterator))
                     model.mutate(session)
                     logging.info('Model mutated')
                     model.save(session, checkpoint_dir)
