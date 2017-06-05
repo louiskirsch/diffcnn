@@ -2,8 +2,9 @@ import math
 import random
 import uuid
 from abc import abstractmethod, abstractproperty
+from functools import lru_cache
 from pathlib import Path
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Tuple
 
 import numpy as np
 import tensorflow as tf
@@ -185,26 +186,30 @@ class Node:
         self.parents.append(parent)
         parent.children.append(self)
 
-    def _concat(self, tensors: List[tf.Tensor]) -> tf.Tensor:
-        if len(tensors) == 0:
+    @staticmethod
+    @lru_cache(maxsize=None)
+    def _concat(tensors: Tuple[tf.Tensor]) -> tf.Tensor:
+        if len(tensors) == 1:
             return tensors[0]
+
         time_lengths = [tensor.get_shape().as_list()[2] for tensor in tensors]
         min_time_length = min(time_lengths)
 
-        resized_tensors = []
-        for tensor, time_length in zip(tensors, time_lengths):
-            # TODO pad instead of max pool if stride = 2
-            if time_length > min_time_length:
-                ksize_time = int(round(time_length / min_time_length, ndigits=0))
-                kernel_size = [1, 1, ksize_time, 1]
-                tensor = tf.nn.max_pool(tensor, ksize=kernel_size, strides=kernel_size, padding='SAME')
-                # in case of bad roundings
-                new_time_length = tensor.get_shape().as_list()[2]
-                if new_time_length > min_time_length:
-                    tensor = tensor[:, :, :min_time_length, ...]
-            resized_tensors.append(tensor)
+        with tf.variable_scope('concat_nodes'):
+            resized_tensors = []
+            for tensor, time_length in zip(tensors, time_lengths):
+                # TODO pad instead of max pool if stride = 2
+                if time_length > min_time_length:
+                    ksize_time = int(round(time_length / min_time_length, ndigits=0))
+                    kernel_size = [1, 1, ksize_time, 1]
+                    tensor = tf.nn.max_pool(tensor, ksize=kernel_size, strides=kernel_size, padding='SAME')
+                    # in case of bad roundings
+                    new_time_length = tensor.get_shape().as_list()[2]
+                    if new_time_length > min_time_length:
+                        tensor = tensor[:, :, :min_time_length, ...]
+                resized_tensors.append(tensor)
 
-        return tf.concat(resized_tensors, axis=-1)
+            return tf.concat(resized_tensors, axis=-1)
 
     def save_variables(self, session: tf.Session):
         pass
@@ -231,6 +236,7 @@ class Node:
         return self.output_tensor is not None
 
     def reset_recursively(self):
+        self._concat.cache_clear()
         for node in self.all_descendants():
             node.reset()
 
@@ -481,12 +487,10 @@ class FullyConnectedNode(VariableNode):
 
     def _build(self):
         super()._build()
+        # noinspection PyTypeChecker
+        input_tensor = self._concat(tuple(node.output_tensor for node in self.parents))
         with tf.variable_scope('fullyconnected_node_' + self.uuid) as scope:
             self._scope = scope
-            if len(self.parents) > 1:
-                input_tensor = self._concat([node.output_tensor for node in self.parents])
-            else:
-                input_tensor = self.parents[0].output_tensor
 
             # Pool and reshape if not compatible
             if input_tensor.get_shape().ndims > 2:
@@ -526,7 +530,6 @@ class FullyConnectedNode(VariableNode):
 class ConvNode(VariableNode):
 
     FILTER_WIDTH = 16
-    MAX_CHANNELS_OUT = 256
     NEW_NODE_PROBABILITY = 0.1
 
     def __init__(self, parents: List):
@@ -552,17 +555,14 @@ class ConvNode(VariableNode):
         self.channels_out = state['channels_out']
 
     def grow(self):
-        create_new_node_randomly = random.random() < self.NEW_NODE_PROBABILITY
-        if self.channels_out < self.MAX_CHANNELS_OUT and not create_new_node_randomly:
-            super().grow()
-        else:
+        super().grow()
+        create_new_node = random.random() < self.NEW_NODE_PROBABILITY
+        if create_new_node:
             self._create_new_node()
 
     def _create_new_node(self):
         new_conv = ConvNode(self.parents)
         self.add_parent(new_conv)
-        for child in self.children:
-            child.add_parent(new_conv)
         new_conv._notify_output_addition(new_conv.output_count)
 
     def _add_outputs(self, add_channels: int):
@@ -614,9 +614,10 @@ class ConvNode(VariableNode):
 
     def _build(self):
         super()._build()
+        # noinspection PyTypeChecker
+        input_tensor = self._concat(tuple(node.output_tensor for node in self.parents))
         with tf.variable_scope('conv_node_' + self.uuid) as scope:
             self._scope = scope
-            input_tensor = self._concat([node.output_tensor for node in self.parents])
 
             channels_in = input_tensor.get_shape()[-1]
 
