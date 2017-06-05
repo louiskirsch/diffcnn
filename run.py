@@ -91,7 +91,9 @@ def main():
 
         model = create_mutating_cnn(dataset, checkpoint_dir)
         while True:
+            model.update_sample_length(int(0.9 * dataset.sample_length))
             train_and_mutate(model, dataset, checkpoint_dir, log_dir_train)
+            model.update_sample_length(dataset.sample_length)
             operations.evaluate(model, dataset, checkpoint_dir, log_dir_test, feature_name='')
 
 

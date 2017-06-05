@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 
 import random
+import itertools
 
 
 def batch_samples_from_callback(sample_callback, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -70,6 +71,18 @@ class HorizontalDataset(Dataset):
             y = self.class_to_id[dataset.iloc[row_index, 0]]
             yield x, y
 
+    def _generate_samples_with_offset(self, dataset: pd.DataFrame, sample_length: int) -> Tuple[np.ndarray, int]:
+        row_count = self.df_train.shape[0]
+        offset_count = self.sample_length - sample_length + 1
+        samples_spec = list(itertools.product(range(row_count), range(offset_count)))
+        random.shuffle(samples_spec)
+        for row_index, offset in samples_spec:
+            start = 1 + offset
+            end = start + sample_length
+            x = dataset.iloc[row_index, start:end].values
+            y = self.class_to_id[dataset.iloc[row_index, 0]]
+            yield x, y
+
     def data_generator(self, dataset: str, batch_size: int, sample_length: int = None,
                        loop: bool = False, **kwargs) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
         dataset = self.df_train if dataset == 'train' else self.df_test
@@ -80,8 +93,9 @@ class HorizontalDataset(Dataset):
                     break
         else:
             while True:
-                yield batch_samples_from_callback(lambda: self._sample_randomly(dataset, sample_length),
-                                                  batch_size)
+                yield from batch_generator(self._generate_samples_with_offset(dataset, sample_length), batch_size)
+                if not loop:
+                    break
 
 
 class PercentalSplitDataset(Dataset):

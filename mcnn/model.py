@@ -21,6 +21,10 @@ class Model:
         self.learning_rate = learning_rate
         self.build()
 
+    def update_sample_length(self, sample_length: int):
+        self.sample_length = sample_length
+        self.build()
+
     # noinspection PyAttributeOutsideInit
     def build(self):
         tf.reset_default_graph()
