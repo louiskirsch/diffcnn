@@ -4,13 +4,14 @@ import uuid
 from abc import abstractmethod, abstractproperty
 from functools import lru_cache
 from pathlib import Path
-from typing import List, Dict, Set, Tuple
+from typing import List, Dict, Set, Tuple, Union
 
 import numpy as np
 import tensorflow as tf
 import pickle
 import logging
 import graphviz
+from lazy import lazy
 from tensorflow.contrib.layers import xavier_initializer
 
 
@@ -220,6 +221,7 @@ class Node:
 
     def reset(self):
         self.output_tensor = None
+        lazy.invalidate(self, 'penalty')
 
     def all_descendants(self, visited: Set = None) -> Set:
         if visited is None:
@@ -281,6 +283,10 @@ class Node:
             'outputs': str(self.output_count)
         }
 
+    @lazy
+    def penalty(self) -> Union[tf.Tensor, None]:
+        return None
+
     @abstractproperty
     @property
     def output_count(self):
@@ -328,6 +334,7 @@ class VariableNode(Node):
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
     DELETION_THRESHOLD = 0.5        # Originally 0.05
+    # TODO how to get rid of this hyperparameter?
     L1_NORM_PENALTY_STRENGTH = 1e-6
 
     DELETE_NODE_THRESHOLD = 8
@@ -372,7 +379,7 @@ class VariableNode(Node):
         elif count > self.NEURONS_BELOW_DEL_THRESHOLD:
             logging.info('Shrinking')
             deletion_indices = self._below_del_threshold_indices.eval(session=session)
-            self.shrink(deletion_indices)
+            self.shrink(deletion_indices[self.NEURONS_BELOW_DEL_THRESHOLD:])
 
     def save_variables(self, session: tf.Session):
         if self._scope is None:
@@ -428,11 +435,12 @@ class VariableNode(Node):
         for parent in self.parents:
             assert isinstance(parent, Node)
             parent.children.remove(self)
-
-        self._notify_output_removal(np.arange(self.output_count))
-        for child in self.parents:
+        for child in self.children:
             assert isinstance(child, VariableNode)
             child.parents.remove(self)
+
+        self._notify_output_removal(np.arange(self.output_count))
+        logging.info('Deleted node {}'.format(self.uuid))
 
     def variable_initialization(self, shape: List[int]):
         return tf.random_normal(shape, stddev=0.035)
@@ -558,11 +566,16 @@ class FullyConnectedNode(VariableNode):
         self.output_tensor = output
         return output
 
+    @lazy
+    def penalty(self) -> Union[tf.Tensor, None]:
+        return tf.reduce_sum(tf.abs(self._filter_var))
+
 
 class ConvNode(VariableNode):
 
     FILTER_WIDTH = 16
-    NEW_NODE_PROBABILITY = 0.1
+    # TODO any other way than doing this probabilistically?
+    NEW_NODE_PROBABILITY = 0.5
 
     def __init__(self, parents: List):
         super().__init__(parents)
@@ -605,8 +618,10 @@ class ConvNode(VariableNode):
             self._create_new_node()
 
     def _create_new_node(self):
-        new_conv = ConvNode(self.parents)
-        self.add_parent(new_conv)
+        old_children = list(self.children)
+        new_conv = ConvNode([self])
+        for child in old_children:
+            child.add_parent(new_conv)
         new_conv._notify_output_addition(new_conv.output_count)
 
     def _add_outputs(self, add_channels: int):
@@ -689,6 +704,11 @@ class ConvNode(VariableNode):
         self.output_tensor = output
         return output
 
+    @lazy
+    def penalty(self) -> Union[tf.Tensor, None]:
+        # The further down the hierarchy the more expensive (because depth costs time)
+        return (self.max_depth ** 4) * tf.reduce_sum(tf.abs(self._filter_var))
+
 
 class MutatingCnnModel(Model):
 
@@ -725,8 +745,9 @@ class MutatingCnnModel(Model):
         # Calculate L1-norm on outgoing weights
         # TODO maybe try different regularization as defined by Sentiono 1997
         # TODO Idea: take the maximum over axis [0, 1, 2]
-        weights = tf.get_collection(VariableNode.WEIGHT_COLLECTION)
-        l1 = tf.add_n([tf.reduce_sum(tf.abs(weight)) for weight in weights])
+        nodes = self.input_node.all_descendants()
+        penalties = [node.penalty for node in nodes if node.penalty is not None]
+        l1 = tf.add_n(penalties)
         l1_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * l1
         tf.summary.scalar('l1_penalty', l1_penalty)
         # noinspection PyTypeChecker

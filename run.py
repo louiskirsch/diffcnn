@@ -97,7 +97,7 @@ def main():
 
         operations.train_and_mutate(model,
                                     dataset,
-                                    step_count=10000,
+                                    step_count=50000,
                                     checkpoint_dir=checkpoint_dir,
                                     log_dir=log_dir_train,
                                     steps_per_checkpoint=1000,
