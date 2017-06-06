@@ -10,6 +10,7 @@ import numpy as np
 import tensorflow as tf
 import pickle
 import logging
+import graphviz
 from tensorflow.contrib.layers import xavier_initializer
 
 
@@ -257,6 +258,29 @@ class Node:
         node_idx = self.parents.index(parent_node)
         return sum(p.output_count for p in self.parents[:node_idx])
 
+    def to_graphviz(self) -> graphviz.Digraph:
+        graph = graphviz.Digraph('mutating-cnn')
+        nodes = self.all_descendants()
+        for node in nodes:
+            label = node.label
+            for k, v in node.attributes.items():
+                label += '\n{} = {}'.format(k, v)
+            graph.node(node.uuid, label)
+        for node in nodes:
+            for child in node.children:
+                graph.edge(node.uuid, child.uuid)
+        return graph
+
+    @property
+    def label(self) -> str:
+        return 'node'
+
+    @property
+    def attributes(self) -> Dict[str, str]:
+        return {
+            'outputs': str(self.output_count)
+        }
+
     @abstractproperty
     @property
     def output_count(self):
@@ -276,6 +300,10 @@ class InputNode(Node):
     @property
     def output_count(self):
         return 1
+
+    @property
+    def label(self) -> str:
+        return 'input_node'
 
     def __setstate__(self, state):
         super().__setstate__(state)
@@ -422,6 +450,10 @@ class FullyConnectedNode(VariableNode):
     def output_count(self):
         return self._output_count
 
+    @property
+    def label(self) -> str:
+        return 'fullyconnected_node'
+
     def __setstate__(self, state):
         super().__setstate__(state)
         self.can_mutate = state['can_mutate']
@@ -536,6 +568,18 @@ class ConvNode(VariableNode):
         super().__init__(parents)
         self.stride = random.randint(1, 2)
         self.channels_out = self.OUTPUT_INCREMENT
+
+    @property
+    def label(self) -> str:
+        return 'conv_node'
+
+    @property
+    def attributes(self) -> Dict[str, str]:
+        attributes = super().attributes
+        attributes.update({
+            'stride': str(self.stride)
+        })
+        return attributes
 
     @property
     def output_count(self):
@@ -702,6 +746,9 @@ class MutatingCnnModel(Model):
             node.save_variables(session)
         with (checkpoint_dir / 'nodes.pickle').open('wb') as outfile:
             pickle.dump((self.input_node, self.terminus_node), outfile)
+        graph = self.input_node.to_graphviz()
+        step = self.global_step.eval(session=session)
+        graph.render(str(checkpoint_dir / 'graph-{}'.format(step)), cleanup=True)
 
     def _create_saver(self):
         # Exclude variables of nodes, those are saved separately

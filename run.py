@@ -76,7 +76,7 @@ def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, data
 def main():
     multiprocessing.set_start_method('spawn')
     logging.basicConfig(level=logging.INFO)
-    root = Path.home() / 'data' / 'UCR_TS_Archive_2015'
+    root = Path('data') / 'UCR_TS_Archive_2015'
 
     # for dataset_path in root.iterdir():
     for dataset_path in [root / 'Adiac']:
