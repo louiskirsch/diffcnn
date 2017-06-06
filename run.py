@@ -1,6 +1,7 @@
+import multiprocessing
 from pathlib import Path
 import logging
-import yaml
+from multiprocessing import Process
 
 import mcnn.operations as operations
 from mcnn.model import McnnModel, McnnConfiguration, Model, AutoCnnModel, MutatingCnnModel
@@ -38,11 +39,11 @@ def create_auto_cnn(dataset: HorizontalDataset) -> Model:
     return model
 
 
-def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path) -> MutatingCnnModel:
+def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path, sample_length: int) -> MutatingCnnModel:
     model = MutatingCnnModel(batch_size=64,
                              num_classes=dataset.target_classes_count,
                              learning_rate=1e-4,
-                             sample_length=dataset.sample_length,
+                             sample_length=sample_length,
                              checkpoint_dir=checkpoint_dir)
     return model
 
@@ -57,16 +58,6 @@ def train(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
                      feature_name='')
 
 
-def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
-    operations.train_and_mutate(model,
-                                dataset,
-                                step_count=10000,
-                                checkpoint_dir=checkpoint_dir,
-                                log_dir=log_dir,
-                                steps_per_checkpoint=1000,
-                                feature_name='')
-
-
 def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
     operations.deconv(model,
                       dataset,
@@ -75,7 +66,14 @@ def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
                       feature_name='')
 
 
+def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, dataset_name: str):
+    eval_dataset = HorizontalDataset(dataset_train, dataset_test)
+    eval_model = create_mutating_cnn(eval_dataset, checkpoint_dir, eval_dataset.sample_length)
+    log_dir_test = Path('logs') / (dataset_name + '_test')
+    operations.evaluate(eval_model, eval_dataset, checkpoint_dir, log_dir_test, feature_name='')
+
 def main():
+    multiprocessing.set_start_method('spawn')
     logging.basicConfig(level=logging.INFO)
     root = Path.home() / 'data' / 'UCR_TS_Archive_2015'
 
@@ -84,17 +82,26 @@ def main():
         dataset_name = dataset_path.name
         checkpoint_dir = Path('checkpoints') / dataset_name
         log_dir_train = Path('logs') / (dataset_name + '_train')
-        log_dir_test = Path('logs') / (dataset_name + '_test')
 
-        dataset = HorizontalDataset(root / dataset_name / (dataset_name + '_TRAIN'),
-                                    root / dataset_name / (dataset_name + '_TEST'))
+        dataset_train = root / dataset_name / (dataset_name + '_TRAIN')
+        dataset_test = root / dataset_name / (dataset_name + '_TEST')
+        dataset = HorizontalDataset(dataset_train, dataset_test)
 
-        model = create_mutating_cnn(dataset, checkpoint_dir)
-        while True:
-            model.update_sample_length(int(0.9 * dataset.sample_length))
-            train_and_mutate(model, dataset, checkpoint_dir, log_dir_train)
-            model.update_sample_length(dataset.sample_length)
-            operations.evaluate(model, dataset, checkpoint_dir, log_dir_test, feature_name='')
+        train_sample_length = int(0.9 * dataset.sample_length)
+        model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
+
+        def evaluate_process():
+            proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
+            proc.start()
+
+        operations.train_and_mutate(model,
+                                    dataset,
+                                    step_count=10000,
+                                    checkpoint_dir=checkpoint_dir,
+                                    log_dir=log_dir_train,
+                                    steps_per_checkpoint=1000,
+                                    feature_name='',
+                                    checkpoint_written_callback=evaluate_process)
 
 
 if __name__ == '__main__':

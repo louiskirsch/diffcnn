@@ -1,12 +1,10 @@
 from pathlib import Path
+from typing import Callable
 
-import matplotlib.colors
 import tensorflow as tf
 import numpy as np
 import itertools
 import logging
-
-import matplotlib.pyplot as plt
 
 from mcnn.model import Model, MutatingCnnModel
 from mcnn.samples import Dataset
@@ -96,7 +94,7 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
 
 
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-                     steps_per_checkpoint: int, feature_name: str):
+                     steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable):
 
     if not checkpoint_dir.exists():
         checkpoint_dir.mkdir(parents=True)
@@ -133,6 +131,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     model.save(session, checkpoint_dir)
                     logging.info('Model saved')
+                    if checkpoint_written_callback is not None:
+                        # noinspection PyCallingNonCallable
+                        checkpoint_written_callback()
 
         model.build()
         logging.info('Model rebuilt')
@@ -141,6 +142,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
 
 def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Path, feature_name: str):
     from cnnvis.deconv import Deconvolutionizer
+    import matplotlib.colors
+    import matplotlib.pyplot as plt
 
     with tf.Session() as session:
 
