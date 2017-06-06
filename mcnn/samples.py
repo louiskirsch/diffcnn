@@ -29,13 +29,17 @@ class Dataset:
 
     @abstractmethod
     def data_generator(self, dataset: str, batch_size: int, feature_name: str = None,
-                              sample_length: int = None, loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+                       sample_length: int = None, loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
         raise NotImplementedError()
 
     @abstractproperty
     @property
     def target_classes_count(self):
         raise NotImplementedError()
+
+    @property
+    def test_sample_count(self) -> int:
+        return -1
 
 
 class HorizontalDataset(Dataset):
@@ -52,6 +56,10 @@ class HorizontalDataset(Dataset):
         return self.df_train.shape[1] - 1
 
     @property
+    def test_sample_count(self) -> int:
+        return self.df_test.shape[0]
+
+    @property
     def target_classes_count(self):
         return self._target_classes_count
 
@@ -65,14 +73,14 @@ class HorizontalDataset(Dataset):
         return x, y
 
     def _generate_samples(self, dataset: pd.DataFrame) -> Tuple[np.ndarray, int]:
-        row_count = self.df_train.shape[0]
+        row_count = dataset.shape[0]
         for row_index in np.random.permutation(row_count):
             x = dataset.iloc[row_index, 1:].values
             y = self.class_to_id[dataset.iloc[row_index, 0]]
             yield x, y
 
     def _generate_samples_with_offset(self, dataset: pd.DataFrame, sample_length: int) -> Tuple[np.ndarray, int]:
-        row_count = self.df_train.shape[0]
+        row_count = dataset.shape[0]
         offset_count = self.sample_length - sample_length + 1
         samples_spec = list(itertools.product(range(row_count), range(offset_count)))
         random.shuffle(samples_spec)

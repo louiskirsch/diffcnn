@@ -72,6 +72,7 @@ def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, data
     log_dir_test = Path('logs') / (dataset_name + '_test')
     operations.evaluate(eval_model, eval_dataset, checkpoint_dir, log_dir_test, feature_name='')
 
+
 def main():
     multiprocessing.set_start_method('spawn')
     logging.basicConfig(level=logging.INFO)
@@ -106,3 +107,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -27,6 +27,7 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
 
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
+        model.batch_size = dataset.test_sample_count
 
         test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
                                                        sample_length=model.sample_length)
@@ -96,8 +97,12 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable):
 
+    checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
+
     if not checkpoint_dir.exists():
         checkpoint_dir.mkdir(parents=True)
+    if not checkpoint_dir_mutated.exists():
+        checkpoint_dir_mutated.mkdir(parents=True)
     if not log_dir.exists():
         log_dir.mkdir(parents=True)
 
@@ -108,8 +113,10 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
     steps_left = step_count
 
     while steps_left > 0:
+        is_initial_iteration = steps_left == step_count
         with tf.Session() as session:
-            model.restore_or_create(session, checkpoint_dir)
+            used_checkpoint_dir = checkpoint_dir if is_initial_iteration else checkpoint_dir_mutated
+            model.restore_or_create(session, used_checkpoint_dir)
             model.setup_summary_writer(session, log_dir)
             iterate_step_count = min(steps_left, steps_per_checkpoint)
 
@@ -127,13 +134,17 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                                                                      correct_count=True, update_summary=True)
                     accuracy = correct_count / model.batch_size
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
-                    model.mutate(session)
-                    logging.info('Model mutated')
+
                     model.save(session, checkpoint_dir)
                     logging.info('Model saved')
                     if checkpoint_written_callback is not None:
                         # noinspection PyCallingNonCallable
                         checkpoint_written_callback()
+
+                    model.mutate(session)
+                    logging.info('Model mutated')
+                    model.save(session, checkpoint_dir_mutated)
+                    logging.info('Model saved')
 
         model.build()
         logging.info('Model rebuilt')
