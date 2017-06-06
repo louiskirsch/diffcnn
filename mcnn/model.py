@@ -300,7 +300,7 @@ class VariableNode(Node):
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
     DELETION_THRESHOLD = 0.5        # Originally 0.05
-    L1_NORM_PENALTY_STRENGTH = 1e-4
+    L1_NORM_PENALTY_STRENGTH = 1e-6
 
     DELETE_NODE_THRESHOLD = 8
     OUTPUT_INCREMENT = 16
