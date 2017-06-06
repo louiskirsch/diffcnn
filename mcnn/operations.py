@@ -30,7 +30,8 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
 
-        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False)
+        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
+                                                       sample_length=model.sample_length)
 
         sample_total_count = 0
         correct_total_count = 0
