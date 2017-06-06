@@ -1,6 +1,7 @@
 import multiprocessing
 from pathlib import Path
 import logging
+import sys
 from multiprocessing import Process
 
 import mcnn.operations as operations
@@ -77,32 +78,30 @@ def main():
     multiprocessing.set_start_method('spawn')
     logging.basicConfig(level=logging.INFO)
     root = Path('data') / 'UCR_TS_Archive_2015'
+    dataset_name = sys.argv[1]
 
-    # for dataset_path in root.iterdir():
-    for dataset_path in [root / 'Adiac']:
-        dataset_name = dataset_path.name
-        checkpoint_dir = Path('checkpoints') / dataset_name
-        log_dir_train = Path('logs') / (dataset_name + '_train')
+    checkpoint_dir = Path('checkpoints') / dataset_name
+    log_dir_train = Path('logs') / (dataset_name + '_train')
 
-        dataset_train = root / dataset_name / (dataset_name + '_TRAIN')
-        dataset_test = root / dataset_name / (dataset_name + '_TEST')
-        dataset = HorizontalDataset(dataset_train, dataset_test)
+    dataset_train = root / dataset_name / (dataset_name + '_TRAIN')
+    dataset_test = root / dataset_name / (dataset_name + '_TEST')
+    dataset = HorizontalDataset(dataset_train, dataset_test)
 
-        train_sample_length = int(0.9 * dataset.sample_length)
-        model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
+    train_sample_length = int(0.9 * dataset.sample_length)
+    model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
 
-        def evaluate_process():
-            proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
-            proc.start()
+    def evaluate_process():
+        proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
+        proc.start()
 
-        operations.train_and_mutate(model,
-                                    dataset,
-                                    step_count=50000,
-                                    checkpoint_dir=checkpoint_dir,
-                                    log_dir=log_dir_train,
-                                    steps_per_checkpoint=1000,
-                                    feature_name='',
-                                    checkpoint_written_callback=evaluate_process)
+    operations.train_and_mutate(model,
+                                dataset,
+                                step_count=50000,
+                                checkpoint_dir=checkpoint_dir,
+                                log_dir=log_dir_train,
+                                steps_per_checkpoint=1000,
+                                feature_name='',
+                                checkpoint_written_callback=evaluate_process)
 
 
 if __name__ == '__main__':
