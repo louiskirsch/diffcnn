@@ -10,6 +10,13 @@ from mcnn.model import Model, MutatingCnnModel
 from mcnn.samples import Dataset
 
 
+def create_session() -> tf.Session:
+    config = tf.ConfigProto()
+    config.gpu_options.allow_growth = True
+    session = tf.Session(config=config)
+    return session
+
+
 def _evaluate_batch(session: tf.Session, model: Model, input: np.ndarray, labels: np.ndarray):
     feed_dict = {
         model.input: input,
@@ -23,7 +30,7 @@ def _evaluate_batch(session: tf.Session, model: Model, input: np.ndarray, labels
 def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path,
              feature_name: str):
 
-    with tf.Session() as session:
+    with create_session() as session:
 
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
@@ -61,7 +68,7 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
     if not log_dir.exists():
         log_dir.mkdir(parents=True)
 
-    with tf.Session() as session:
+    with create_session() as session:
 
         model.restore_or_create(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
@@ -114,7 +121,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
 
     while steps_left > 0:
         is_initial_iteration = steps_left == step_count
-        with tf.Session() as session:
+        with create_session() as session:
             used_checkpoint_dir = checkpoint_dir if is_initial_iteration else checkpoint_dir_mutated
             model.restore_or_create(session, used_checkpoint_dir)
             model.setup_summary_writer(session, log_dir)
@@ -156,7 +163,7 @@ def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Pa
     import matplotlib.colors
     import matplotlib.pyplot as plt
 
-    with tf.Session() as session:
+    with create_session() as session:
 
         model.restore(session, checkpoint_dir)
         deconvolutionizer = Deconvolutionizer(session, model.input, model.batch_size)
