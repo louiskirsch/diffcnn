@@ -435,11 +435,14 @@ class VariableNode(Node):
         for parent in self.parents:
             assert isinstance(parent, Node)
             parent.children.remove(self)
+        self._remove_outputs(np.arange(self.output_count))
         for child in self.children:
             assert isinstance(child, VariableNode)
-            child.parents.remove(self)
+            if len(child.parents) == 1:
+                child.delete()
+            else:
+                child.parents.remove(self)
 
-        self._notify_output_removal(np.arange(self.output_count))
         logging.info('Deleted node {}'.format(self.uuid))
 
     def variable_initialization(self, shape: List[int]):
