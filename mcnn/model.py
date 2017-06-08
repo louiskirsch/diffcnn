@@ -578,7 +578,8 @@ class FullyConnectedNode(VariableNode):
 
     @lazy
     def penalty(self) -> Union[tf.Tensor, None]:
-        squared_weight = tf.square(self._filter_var)
+        outgoing_weights = tf.reduce_sum(tf.abs(self._filter_var), axis=0)
+        squared_weight = tf.square(outgoing_weights)
         return tf.reduce_sum(squared_weight / (1 + squared_weight))
 
 
@@ -717,7 +718,8 @@ class ConvNode(VariableNode):
 
     @lazy
     def penalty(self) -> Union[tf.Tensor, None]:
-        squared_weight = tf.square(self._filter_var)
+        outgoing_weights = tf.reduce_sum(tf.abs(self._filter_var), axis=[0, 1, 2])
+        squared_weight = tf.square(outgoing_weights)
         # The further down the hierarchy the more expensive (because depth costs time)
         return (self.max_depth ** 4) * tf.reduce_sum(squared_weight / (1 + squared_weight))
 
