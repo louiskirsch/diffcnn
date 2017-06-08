@@ -445,8 +445,15 @@ class VariableNode(Node):
 
         logging.info('Deleted node {}'.format(self.uuid))
 
-    def variable_initialization(self, shape: List[int]):
-        return tf.random_normal(shape, stddev=0.035)
+    def weight_initialization(self, shape: List[int]):
+        dim_count = len(shape)
+        weights = tf.random_normal(shape, stddev=0.35)
+        norm = tf.reduce_sum(tf.abs(weights), axis=list(range(dim_count - 1)))
+        # Outgoing weights are exactly at deletion threshold
+        return weights / norm * self.DELETION_THRESHOLD
+
+    def bias_initialization(self, shape: List[int]):
+        return tf.zeros(shape)
 
 
 class FullyConnectedNode(VariableNode):
@@ -488,8 +495,8 @@ class FullyConnectedNode(VariableNode):
         if self._scope is None:
             return
         with tf.variable_scope(self._scope):
-            new_weights = self.variable_initialization([self.input_count, add_outputs_count])
-            new_bias = self.variable_initialization([add_outputs_count])
+            new_weights = self.weight_initialization([self.input_count, add_outputs_count])
+            new_bias = self.bias_initialization([add_outputs_count])
             # Concat at output_count
             self._filter_query = tf.concat([self._filter_query, new_weights], axis=-1)
             self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
@@ -500,7 +507,7 @@ class FullyConnectedNode(VariableNode):
         if self._scope is None:
             return
         with tf.variable_scope(self._scope):
-            new_weights = self.variable_initialization([add_inputs_count, self._output_count])
+            new_weights = self.weight_initialization([add_inputs_count, self._output_count])
             # TODO using output_count here relies on the fact that the maxpooling op reduces to time_length 1
             offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
             new_tensors = [self._filter_query[:offset], new_weights, self._filter_query[offset:]]
@@ -632,8 +639,8 @@ class ConvNode(VariableNode):
         if self._scope is None:
             return
         with tf.variable_scope(self._scope):
-            new_filters = self.variable_initialization([1, self.FILTER_WIDTH, self.input_count, add_channels])
-            new_bias = self.variable_initialization([add_channels])
+            new_filters = self.weight_initialization([1, self.FILTER_WIDTH, self.input_count, add_channels])
+            new_bias = self.bias_initialization([add_channels])
             # Concat at channels_out
             self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
             self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
@@ -644,7 +651,7 @@ class ConvNode(VariableNode):
         if self._scope is None:
             return
         with tf.variable_scope(self._scope):
-            new_filters = self.variable_initialization([1, self.FILTER_WIDTH, add_inputs_count, self.channels_out])
+            new_filters = self.weight_initialization([1, self.FILTER_WIDTH, add_inputs_count, self.channels_out])
             offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
             new_tensors = [self._filter_query[:, :, :offset],
                            new_filters,
