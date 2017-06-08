@@ -67,10 +67,13 @@ def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
                       feature_name='')
 
 
+SUFFIX = ''
+
+
 def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, dataset_name: str):
     eval_dataset = HorizontalDataset(dataset_train, dataset_test)
     eval_model = create_mutating_cnn(eval_dataset, checkpoint_dir, eval_dataset.sample_length)
-    log_dir_test = Path('logs') / (dataset_name + '_test')
+    log_dir_test = Path('logs') / (dataset_name + SUFFIX + '_test')
     operations.evaluate(eval_model, eval_dataset, checkpoint_dir, log_dir_test, feature_name='')
 
 
@@ -80,8 +83,8 @@ def main():
     root = Path('data') / 'UCR_TS_Archive_2015'
     dataset_name = sys.argv[1]
 
-    checkpoint_dir = Path('checkpoints') / dataset_name
-    log_dir_train = Path('logs') / (dataset_name + '_train')
+    checkpoint_dir = Path('checkpoints') / (dataset_name + SUFFIX)
+    log_dir_train = Path('logs') / (dataset_name + SUFFIX + '_train')
 
     dataset_train = root / dataset_name / (dataset_name + '_TRAIN')
     dataset_test = root / dataset_name / (dataset_name + '_TEST')
