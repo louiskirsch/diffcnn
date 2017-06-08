@@ -47,7 +47,7 @@ class Model:
                                                                            name='crossentropy')
             self.loss = self._define_loss(cross_entropy)
             tf.summary.scalar('loss', self.loss)
-            optimizer = tf.train.RMSPropOptimizer(self.learning_rate)
+            optimizer = tf.train.AdamOptimizer(self.learning_rate)
             self.train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
 
         with tf.variable_scope('evaluation'):
