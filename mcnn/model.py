@@ -54,7 +54,9 @@ class Model:
             correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
             self.correct_count = tf.reduce_sum(tf.cast(correct, tf.int32), name='correct_count')
             self.accuracy = self.correct_count / self.dynamic_batch_size
+            self.testing_error = 1 - self.accuracy
             tf.summary.scalar('accuracy', self.accuracy)
+            tf.summary.scalar('testing_error', self.testing_error)
 
         self.init = tf.global_variables_initializer()
         self.summary = tf.summary.merge_all()
