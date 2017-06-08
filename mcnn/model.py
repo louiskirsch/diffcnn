@@ -2,6 +2,7 @@ import math
 import random
 import uuid
 from abc import abstractmethod, abstractproperty
+from collections import deque
 from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Union
@@ -629,9 +630,9 @@ class ConvNode(VariableNode):
         super().grow()
         create_new_node = random.random() < self.NEW_NODE_PROBABILITY
         if create_new_node:
-            self._create_new_node()
+            self.create_new_node()
 
-    def _create_new_node(self):
+    def create_new_node(self):
         old_children = list(self.children)
         new_conv = ConvNode([self])
         for child in old_children:
@@ -741,14 +742,27 @@ class MutatingCnnModel(Model):
             self.terminus_node = FullyConnectedNode([fully_connected_node], fixed_output_count=num_classes,
                                                     non_linearity=False)
 
+        self.output_count_history = deque(maxlen=3)
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
     def mutate(self, session: tf.Session):
-        conv_nodes = [node for node in self.input_node.all_descendants() if isinstance(node, VariableNode)]
+        nodes = self.input_node.all_descendants()
+        variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         with tf.variable_scope(self._nodes_scope):
-            for node in conv_nodes:
+            for node in variable_nodes:
                 assert node.is_built()
                 node.mutate(session)
+
+        nodes = self.input_node.all_descendants()
+        history = self.output_count_history
+        history.append(sum(node.output_count for node in nodes))
+        # When the number of outputs didn't change over 3 iterations, create a new node
+        if len(set(history)) <= 1:
+            conv_nodes = [node for node in nodes if isinstance(node, ConvNode)]
+            max_conv_node_idx = np.argmax(node.max_depth for node in conv_nodes)
+            max_conv_node = conv_nodes[max_conv_node_idx]
+            max_conv_node.create_new_node()
+
 
     def build(self):
         if self.input_node is not None:
