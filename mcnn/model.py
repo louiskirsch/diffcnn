@@ -333,7 +333,7 @@ class VariableNode(Node):
 
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
-    DELETION_THRESHOLD = 0.5        # Originally 0.05
+    DELETION_THRESHOLD = 0.05        # Originally 0.05
     # TODO how to get rid of this hyperparameter?
     L1_NORM_PENALTY_STRENGTH = 1e-6
 
