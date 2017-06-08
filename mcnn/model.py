@@ -1,5 +1,6 @@
 import math
 import random
+import tempfile
 import uuid
 from abc import abstractmethod, abstractproperty
 from collections import deque
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Set, Tuple, Union
 
 import numpy as np
+import scipy.misc
 import tensorflow as tf
 import pickle
 import logging
@@ -224,9 +226,8 @@ class Node:
 
     def reset(self):
         self.output_tensor = None
-        lazy.invalidate(self, 'penalty')
 
-    def all_descendants(self, visited: Set = None) -> Set:
+    def all_descendants(self, visited: Set = None) -> Set['Node']:
         if visited is None:
             visited = set()
         visited.add(self)
@@ -263,7 +264,7 @@ class Node:
         node_idx = self.parents.index(parent_node)
         return sum(p.output_count for p in self.parents[:node_idx])
 
-    def to_graphviz(self) -> graphviz.Digraph:
+    def to_graphviz(self, session: tf.Session, step: int, tmp_directory: Path) -> graphviz.Digraph:
         graph = graphviz.Digraph('mutating-cnn')
         nodes = self.all_descendants()
         for node in nodes:
@@ -271,10 +272,14 @@ class Node:
             for k, v in node.attributes.items():
                 label += '\n{} = {}'.format(k, v)
             graph.node(node.uuid, label)
+            node._add_graph_misc(session, graph, step, tmp_directory)
         for node in nodes:
             for child in node.children:
                 graph.edge(node.uuid, child.uuid)
         return graph
+
+    def _add_graph_misc(self, session: tf.Session, graph: graphviz.Digraph, step: int, tmp_directory: Path):
+        pass
 
     @property
     def label(self) -> str:
@@ -286,7 +291,7 @@ class Node:
             'outputs': str(self.output_count)
         }
 
-    @lazy
+    @property
     def penalty(self) -> Union[tf.Tensor, None]:
         return None
 
@@ -358,6 +363,8 @@ class VariableNode(Node):
         self._bias_query = None
         self._below_del_threshold_count = None
         self._below_del_threshold_indices = None
+        self._penalty_per_output = None
+        self._penalty = None
 
     def __getstate__(self):
         s = super().__getstate__()
@@ -457,6 +464,31 @@ class VariableNode(Node):
 
     def bias_initialization(self, shape: List[int]):
         return tf.zeros(shape)
+
+    @property
+    def penalty(self) -> Union[tf.Tensor, None]:
+        return self._penalty
+
+    def render_penalties(self, session: tf.Session, output_dir: Path, step: int) -> Path:
+        if self._scope is None:
+            raise ValueError('Node not created in graph')
+        penalties = self._penalty_per_output.eval(session=session)
+        img_width = len(penalties)
+        img_height = img_width // 3
+        img = np.broadcast_to(penalties, (img_height, img_width))
+        filename = 'penalties_{}_{}.png'.format(self.uuid, step)
+        file = output_dir / filename
+        scipy.misc.imsave(str(file), img)
+        return file
+
+    def _add_graph_misc(self, session: tf.Session, graph: graphviz.Digraph, step: int, tmp_directory: Path):
+        try:
+            img_path = self.render_penalties(session, tmp_directory, step)
+            node_name = self.uuid + '_penalties'
+            graph.node(node_name, label='', image=str(img_path), imagescale='true', shape='box')
+            graph.edge(self.uuid, node_name, arrowType='none')
+        except ValueError:
+            pass
 
 
 class FullyConnectedNode(VariableNode):
@@ -564,11 +596,17 @@ class FullyConnectedNode(VariableNode):
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
 
-            weight_sums = tf.reduce_sum(tf.abs(weight), axis=0)
-            tf.summary.histogram('outgoing_weight_sums', weight_sums)
-            below_del_threshold = weight_sums < self.DELETION_THRESHOLD
+            outgoing_weights = tf.reduce_sum(tf.abs(weight), axis=0)
+            tf.summary.histogram('outgoing_weight_sums', outgoing_weights)
+
+            below_del_threshold = outgoing_weights < self.DELETION_THRESHOLD
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
+
+            squared_outgoing_weights = tf.square(outgoing_weights)
+            self._penalty_per_output = squared_outgoing_weights / (1 + squared_outgoing_weights)
+            self._penalty = tf.reduce_sum(self._penalty_per_output)
+
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
 
@@ -578,12 +616,6 @@ class FullyConnectedNode(VariableNode):
         self._bias_query = bias
         self.output_tensor = output
         return output
-
-    @lazy
-    def penalty(self) -> Union[tf.Tensor, None]:
-        outgoing_weights = tf.reduce_sum(tf.abs(self._filter_var), axis=0)
-        squared_weight = tf.square(outgoing_weights)
-        return tf.reduce_sum(squared_weight / (1 + squared_weight))
 
 
 class ConvNode(VariableNode):
@@ -704,11 +736,17 @@ class ConvNode(VariableNode):
             output = tf.nn.bias_add(output, bias)
             output = tf.nn.relu(output, name='relu')
 
-            weight_sums = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
-            tf.summary.histogram('outgoing_weight_sums', weight_sums)
-            below_del_threshold = weight_sums < self.DELETION_THRESHOLD
+            outgoing_weights = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
+            tf.summary.histogram('outgoing_weight_sums', outgoing_weights)
+
+            below_del_threshold = outgoing_weights < self.DELETION_THRESHOLD
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
+
+            squared_outgoing_weights = tf.square(outgoing_weights)
+            self._penalty_per_output = squared_outgoing_weights / (1 + squared_outgoing_weights)
+            self._penalty = (self.max_depth ** 4) * tf.reduce_sum(self._penalty_per_output)
+
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
 
@@ -718,13 +756,6 @@ class ConvNode(VariableNode):
         self._bias_query = bias
         self.output_tensor = output
         return output
-
-    @lazy
-    def penalty(self) -> Union[tf.Tensor, None]:
-        outgoing_weights = tf.reduce_sum(tf.abs(self._filter_var), axis=[0, 1, 2])
-        squared_weight = tf.square(outgoing_weights)
-        # The further down the hierarchy the more expensive (because depth costs time)
-        return (self.max_depth ** 4) * tf.reduce_sum(squared_weight / (1 + squared_weight))
 
 
 class MutatingCnnModel(Model):
@@ -797,9 +828,12 @@ class MutatingCnnModel(Model):
             node.save_variables(session)
         with (checkpoint_dir / 'nodes.pickle').open('wb') as outfile:
             pickle.dump((self.input_node, self.terminus_node), outfile)
-        graph = self.input_node.to_graphviz()
-        step = self.global_step.eval(session=session)
-        graph.render(str(checkpoint_dir / 'graph-{}'.format(step)), cleanup=True)
+
+    def render_graph(self, session: tf.Session, render_dir: Path):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            step = self.global_step.eval(session=session)
+            graph = self.input_node.to_graphviz(session, step, Path(tmp_dir))
+            graph.render(str(render_dir / 'graph-{}'.format(step)), cleanup=True)
 
     def _create_saver(self):
         # Exclude variables of nodes, those are saved separately
