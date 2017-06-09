@@ -269,7 +269,7 @@ class Node:
         nodes = self.all_descendants()
         for node in nodes:
             label = node.label
-            for k, v in node.attributes.items():
+            for k, v in node.str_node_properties(session):
                 label += '\n{} = {}'.format(k, v)
             graph.node(node.uuid, label)
             node._add_graph_misc(session, graph, step, tmp_directory)
@@ -285,11 +285,10 @@ class Node:
     def label(self) -> str:
         return 'node'
 
-    @property
-    def attributes(self) -> Dict[str, str]:
-        return {
-            'outputs': str(self.output_count)
-        }
+    def str_node_properties(self, session: tf.Session) -> List[Tuple[str, str]]:
+        return [
+            ('outputs', str(self.output_count))
+        ]
 
     @property
     def penalty(self) -> Union[tf.Tensor, None]:
@@ -365,6 +364,7 @@ class VariableNode(Node):
         self._below_del_threshold_indices = None
         self._penalty_per_output = None
         self._penalty = None
+        self._outgoing_weights = None
 
     def __getstate__(self):
         s = super().__getstate__()
@@ -471,11 +471,16 @@ class VariableNode(Node):
 
     def render_penalties(self, session: tf.Session, output_dir: Path, step: int) -> Path:
         if self._scope is None:
-            raise ValueError('Node not created in graph')
+            raise AssertionError('Node not created in graph')
         penalties = self._penalty_per_output.eval(session=session)
         img_width = len(penalties)
         img_height = img_width // 3
+
         img = np.broadcast_to(penalties, (img_height, img_width))
+        img = np.broadcast_to(img, (3, img_height, img_width))
+        img = np.transpose(img, axes=(1, 2, 0)) * 255
+        img = img.astype(np.uint8)
+
         filename = 'penalties_{}_{}.png'.format(self.uuid, step)
         file = output_dir / filename
         scipy.misc.imsave(str(file), img)
@@ -486,9 +491,22 @@ class VariableNode(Node):
             img_path = self.render_penalties(session, tmp_directory, step)
             node_name = self.uuid + '_penalties'
             graph.node(node_name, label='', image=str(img_path), imagescale='true', shape='box')
-            graph.edge(self.uuid, node_name, arrowType='none')
-        except ValueError:
+            graph.edge(self.uuid, node_name, arrowhead='none')
+        except AssertionError:
             pass
+
+    def str_node_properties(self, session: tf.Session) -> List[Tuple[str, str]]:
+        properties = super().str_node_properties(session)
+        if self._scope is not None:
+            # TODO don't access via name
+            penalty_sum = session.graph.get_tensor_by_name('training/penalty_sum:0')
+            properties.extend([
+                ('below_thres_count', self._below_del_threshold_count.eval(session=session)),
+                ('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)),
+                ('outgoing-weights', np.array_str(self._outgoing_weights.eval(session=session))),
+                ('penalty-per-output', np.array_str(self._penalty_per_output.eval(session=session)))
+            ])
+        return properties
 
 
 class FullyConnectedNode(VariableNode):
@@ -604,7 +622,7 @@ class FullyConnectedNode(VariableNode):
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
             squared_outgoing_weights = tf.square(outgoing_weights)
-            self._penalty_per_output = squared_outgoing_weights / (1 + squared_outgoing_weights)
+            self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
             self._penalty = tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
@@ -614,6 +632,7 @@ class FullyConnectedNode(VariableNode):
         self._bias_var = bias
         self._filter_query = weight
         self._bias_query = bias
+        self._outgoing_weights = outgoing_weights
         self.output_tensor = output
         return output
 
@@ -633,13 +652,12 @@ class ConvNode(VariableNode):
     def label(self) -> str:
         return 'conv_node'
 
-    @property
-    def attributes(self) -> Dict[str, str]:
-        attributes = super().attributes
-        attributes.update({
-            'stride': str(self.stride)
-        })
-        return attributes
+    def str_node_properties(self, session: tf.Session) -> List[Tuple[str, str]]:
+        properties = super().str_node_properties(session)
+        properties.extend([
+            ('stride', str(self.stride))
+        ])
+        return properties
 
     @property
     def output_count(self):
@@ -744,7 +762,7 @@ class ConvNode(VariableNode):
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
             squared_outgoing_weights = tf.square(outgoing_weights)
-            self._penalty_per_output = squared_outgoing_weights / (1 + squared_outgoing_weights)
+            self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
             self._penalty = (self.max_depth ** 4) * tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
@@ -754,6 +772,7 @@ class ConvNode(VariableNode):
         self._bias_var = bias
         self._filter_query = filter
         self._bias_query = bias
+        self._outgoing_weights = outgoing_weights
         self.output_tensor = output
         return output
 
@@ -803,16 +822,14 @@ class MutatingCnnModel(Model):
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         loss = super()._define_loss(cross_entropy)
         tf.summary.scalar('cross_entropy', loss)
-        # Calculate L1-norm on outgoing weights
-        # TODO maybe try different regularization as defined by Sentiono 1997
-        # TODO Idea: take the maximum over axis [0, 1, 2]
+        # Calculate Weigend et al. 1990 regularizer on outgoing weights
         nodes = self.input_node.all_descendants()
         penalties = [node.penalty for node in nodes if node.penalty is not None]
-        l1 = tf.add_n(penalties)
-        l1_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * l1
-        tf.summary.scalar('l1_penalty', l1_penalty)
+        penalty_sum = tf.add_n(penalties, name='penalty_sum')
+        reg_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * penalty_sum
+        tf.summary.scalar('l1_penalty', reg_penalty)
         # noinspection PyTypeChecker
-        return loss + l1_penalty
+        return loss + reg_penalty
 
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         # Init all values first, because not all are saved
