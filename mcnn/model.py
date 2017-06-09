@@ -641,7 +641,7 @@ class ConvNode(VariableNode):
 
     FILTER_WIDTH = 16
     # TODO any other way than doing this probabilistically?
-    NEW_NODE_PROBABILITY = 0.5
+    NEW_NODE_PROBABILITY = 0.05
 
     def __init__(self, parents: List):
         super().__init__(parents)
