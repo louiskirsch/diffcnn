@@ -641,7 +641,7 @@ class ConvNode(VariableNode):
 
     FILTER_WIDTH = 16
     # TODO any other way than doing this probabilistically?
-    NEW_NODE_PROBABILITY = 0.05
+    NEW_NODE_PROBABILITY = 0.1
 
     def __init__(self, parents: List):
         super().__init__(parents)
@@ -677,10 +677,13 @@ class ConvNode(VariableNode):
         self.channels_out = state['channels_out']
 
     def grow(self):
-        super().grow()
-        create_new_node = random.random() < self.NEW_NODE_PROBABILITY
-        if create_new_node:
+        create_probabilistically = random.random() < self.NEW_NODE_PROBABILITY
+        if create_probabilistically:
+            # Discard half of all outputs
+            self.shrink(np.arange(self.output_count // 2, self.output_count))
             self.create_new_node()
+        else:
+            super().grow()
 
     def create_new_node(self):
         old_children = list(self.children)
