@@ -503,8 +503,8 @@ class VariableNode(Node):
             properties.extend([
                 ('below_thres_count', self._below_del_threshold_count.eval(session=session)),
                 ('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)),
-                ('outgoing-weights', np.array_str(self._outgoing_weights.eval(session=session))),
-                ('penalty-per-output', np.array_str(self._penalty_per_output.eval(session=session)))
+                #('outgoing-weights', np.array_str(self._outgoing_weights.eval(session=session))),
+                #('penalty-per-output', np.array_str(self._penalty_per_output.eval(session=session)))
             ])
         return properties
 
