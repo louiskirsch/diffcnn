@@ -801,6 +801,7 @@ class MutatingCnnModel(Model):
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert node.is_built()
+                # noinspection PyUnresolvedReferences
                 node.mutate(session)
 
         nodes = self.input_node.all_descendants()
@@ -811,8 +812,8 @@ class MutatingCnnModel(Model):
             conv_nodes = [node for node in nodes if isinstance(node, ConvNode)]
             max_conv_node_idx = np.argmax(node.max_depth for node in conv_nodes)
             max_conv_node = conv_nodes[max_conv_node_idx]
+            # noinspection PyUnresolvedReferences
             max_conv_node.create_new_node()
-
 
     def build(self):
         if self.input_node is not None:
