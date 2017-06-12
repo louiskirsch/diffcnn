@@ -599,9 +599,8 @@ class FullyConnectedNode(VariableNode):
             if input_tensor.get_shape().ndims > 2:
                 # TODO maxpool instead?
                 input_tensor = tf.reduce_max(input_tensor, axis=2, keep_dims=True)
-                batch_size = tf.shape(input_tensor)[0]
                 filter_count = input_tensor.get_shape().as_list()[-1]
-                input_tensor = tf.reshape(input_tensor, shape=(batch_size, filter_count))
+                input_tensor = tf.reshape(input_tensor, shape=(-1, filter_count))
 
             input_size = input_tensor.get_shape()[-1]
 

@@ -49,24 +49,6 @@ def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path, sample
     return model
 
 
-def train(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
-    operations.train(model,
-                     dataset,
-                     step_count=500,
-                     checkpoint_dir=checkpoint_dir,
-                     log_dir=log_dir,
-                     steps_per_checkpoint=100,
-                     feature_name='')
-
-
-def visualize(model: Model, dataset: Dataset, checkpoint_dir: Path):
-    operations.deconv(model,
-                      dataset,
-                      sample_count=1000,
-                      checkpoint_dir=checkpoint_dir,
-                      feature_name='')
-
-
 SUFFIX = ''
 
 
@@ -97,14 +79,16 @@ def main():
         proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
         proc.start()
 
-    operations.train_and_mutate(model,
-                                dataset,
-                                step_count=50000,
-                                checkpoint_dir=checkpoint_dir,
-                                log_dir=log_dir_train,
-                                steps_per_checkpoint=1000,
-                                feature_name='',
-                                checkpoint_written_callback=evaluate_process)
+    operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='')
+
+    #operations.train_and_mutate(model,
+    #                            dataset,
+    #                            step_count=50000,
+    #                            checkpoint_dir=checkpoint_dir,
+    #                            log_dir=log_dir_train,
+    #                            steps_per_checkpoint=1000,
+    #                            feature_name='',
+    #                            checkpoint_written_callback=evaluate_process)
 
 
 if __name__ == '__main__':

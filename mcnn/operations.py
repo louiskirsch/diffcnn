@@ -6,6 +6,7 @@ import numpy as np
 import itertools
 import logging
 
+from mcnn import lrp
 from mcnn.model import Model, MutatingCnnModel
 from mcnn.samples import Dataset
 
@@ -58,6 +59,39 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         loss = loss_sum / batches_count
         print('[Test] Loss {:.2f} Accuracy {:.2f}%'.format(loss, accuracy * 100))
         return accuracy
+
+
+def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_name: str):
+    import matplotlib.colors
+    import matplotlib.pyplot as plt
+
+    relevance = lrp.lrp(model.input, model.logits, 0.0, 1.0)
+
+    with create_session() as session:
+
+        model.restore(session, checkpoint_dir)
+
+        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
+                                                       sample_length=model.sample_length)
+
+        for input, labels in test_sample_generator:
+            feed_dict = {
+                model.input: input
+            }
+            heatmap = relevance.eval(session=session, feed_dict=feed_dict)
+            color_map = matplotlib.colors.LinearSegmentedColormap.from_list('heat', [(0, 0, 0), (1, 0, 0)])
+
+            for batch_idx in range(input.shape[0]):
+                orig = input[batch_idx, ...]
+                heat = heatmap[batch_idx, ...]
+                heat = np.clip((heat - np.mean(heat)) / np.std(heat), 0, 1)
+                length = orig.shape[0]
+                x = range(length)
+                y = orig
+                plt.plot(y, c='black')
+                plt.scatter(x, y, c=heat, cmap=color_map)
+                plt.show()
+                plt.close()
 
 
 def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
