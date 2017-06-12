@@ -763,7 +763,7 @@ class ConvNode(VariableNode):
 
             squared_outgoing_weights = tf.square(outgoing_weights)
             self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
-            self._penalty = (self.max_depth ** 4) * tf.reduce_sum(self._penalty_per_output)
+            self._penalty = tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
