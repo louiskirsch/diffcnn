@@ -678,8 +678,6 @@ class ConvNode(VariableNode):
     def grow(self):
         create_probabilistically = random.random() < self.NEW_NODE_PROBABILITY
         if create_probabilistically:
-            # Discard half of all outputs
-            self.shrink(np.arange(self.output_count // 2, self.output_count))
             self.create_new_node()
         else:
             super().grow()
