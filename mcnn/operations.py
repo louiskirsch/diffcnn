@@ -61,7 +61,8 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         return accuracy
 
 
-def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_name: str):
+def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_name: str,
+                  heatmap_save_path: Path = None):
     import matplotlib.colors
     import matplotlib.pyplot as plt
 
@@ -74,24 +75,49 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_
         test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
                                                        sample_length=model.sample_length)
 
+        reconstructions = []
+
         for input, labels in test_sample_generator:
             feed_dict = {
                 model.input: input
             }
-            heatmap = relevance.eval(session=session, feed_dict=feed_dict)
-            color_map = matplotlib.colors.LinearSegmentedColormap.from_list('heat', [(0, 0, 0), (1, 0, 0)])
+            heatmap, confidences = session.run([relevance, tf.nn.softmax(model.logits)], feed_dict=feed_dict)
 
             for batch_idx in range(input.shape[0]):
                 orig = input[batch_idx, ...]
                 heat = heatmap[batch_idx, ...]
-                heat = np.clip((heat - np.mean(heat)) / np.std(heat), 0, 1)
-                length = orig.shape[0]
-                x = range(length)
-                y = orig
-                plt.plot(y, c='black')
-                plt.scatter(x, y, c=heat, cmap=color_map)
-                plt.show()
-                plt.close()
+                label = labels[batch_idx]
+                confidence = confidences[batch_idx, label]
+                reconstructions.append((orig, heat, label, confidence))
+
+        color_map = matplotlib.colors.LinearSegmentedColormap.from_list('heat', [(0, 0, 0), (1, 0, 0)])
+        size = np.ceil(np.sqrt(dataset.target_classes_count))
+        plt.figure(figsize=(size * 6, size * 4))
+
+        group_by_label = lambda r: r[2]
+        reconstructions.sort(key=group_by_label)
+        for idx, (label, items) in enumerate(itertools.groupby(reconstructions, key=group_by_label)):
+            items = list(items)
+            # noinspection PyTypeChecker
+            max_item = int(np.argmax([i[3] for i in items]))
+            orig, heat, label, confidence = items[max_item]
+            heat = np.clip((heat - np.mean(heat)) / np.std(heat), 0, 1)
+            length = orig.shape[0]
+            x = range(length)
+            y = orig
+            plt.subplot(size, size, idx + 1)
+            for other_item in items:
+                plt.plot(other_item[0], c='gray', alpha=0.2)
+            plt.plot(y, c='black')
+            plt.scatter(x, y, c=heat, cmap=color_map)
+            plt.title('Class {} with {:.2f}% confidence'.format(label, confidence * 100))
+
+        plt.tight_layout(pad=2.0, h_pad=3.0)
+        if heatmap_save_path is not None:
+            plt.savefig(str(heatmap_save_path))
+        else:
+            plt.show()
+        plt.close()
 
 
 def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,

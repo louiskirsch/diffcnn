@@ -72,17 +72,18 @@ def main():
     dataset_test = root / dataset_name / (dataset_name + '_TEST')
     dataset = HorizontalDataset(dataset_train, dataset_test)
 
-    train_sample_length = int(0.9 * dataset.sample_length)
-    model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
-
     def evaluate_process():
         proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
         proc.start()
 
     def visualize():
-        operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='')
+        model = create_mutating_cnn(dataset, checkpoint_dir, dataset.sample_length)
+        heatmap_save_path = Path('plots') / (dataset_name + '_heatmap.pdf')
+        operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='', heatmap_save_path=heatmap_save_path)
 
     def train():
+        train_sample_length = int(0.9 * dataset.sample_length)
+        model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
         operations.train_and_mutate(model,
                                     dataset,
                                     step_count=50000,
