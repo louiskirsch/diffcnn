@@ -342,7 +342,7 @@ class VariableNode(Node):
     NEURONS_BELOW_DEL_THRESHOLD = 1
     DELETION_THRESHOLD = 0.05        # Originally 0.05
     # TODO how to get rid of this hyperparameter?
-    L1_NORM_PENALTY_STRENGTH = 1e-6
+    L1_NORM_PENALTY_STRENGTH = 1e-4
 
     DELETE_NODE_THRESHOLD = 8
     OUTPUT_INCREMENT = 16
