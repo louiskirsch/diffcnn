@@ -79,16 +79,20 @@ def main():
         proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
         proc.start()
 
-    operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='')
+    def visualize():
+        operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='')
 
-    #operations.train_and_mutate(model,
-    #                            dataset,
-    #                            step_count=50000,
-    #                            checkpoint_dir=checkpoint_dir,
-    #                            log_dir=log_dir_train,
-    #                            steps_per_checkpoint=1000,
-    #                            feature_name='',
-    #                            checkpoint_written_callback=evaluate_process)
+    def train():
+        operations.train_and_mutate(model,
+                                    dataset,
+                                    step_count=50000,
+                                    checkpoint_dir=checkpoint_dir,
+                                    log_dir=log_dir_train,
+                                    steps_per_checkpoint=1000,
+                                    feature_name='',
+                                    checkpoint_written_callback=evaluate_process)
+
+    train()
 
 
 if __name__ == '__main__':
