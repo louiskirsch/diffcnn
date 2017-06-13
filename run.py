@@ -91,7 +91,8 @@ def main():
                                     log_dir=log_dir_train,
                                     steps_per_checkpoint=1000,
                                     feature_name='',
-                                    checkpoint_written_callback=evaluate_process)
+                                    checkpoint_written_callback=evaluate_process,
+                                    should_render_graph=False)
 
     train()
 

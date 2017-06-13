@@ -162,7 +162,8 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
 
 
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-                     steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable):
+                     steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
+                     should_render_graph: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -212,7 +213,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
-                model.render_graph(session, checkpoint_dir / 'graph_renderings')
+                if should_render_graph:
+                    model.render_graph(session, checkpoint_dir / 'graph_renderings')
 
         model.build()
         logging.info('Model rebuilt')
