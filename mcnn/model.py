@@ -288,7 +288,8 @@ class Node:
 
     def str_node_properties(self, session: tf.Session) -> List[Tuple[str, str]]:
         return [
-            ('outputs', str(self.output_count))
+            ('outputs', str(self.output_count)),
+            ('depth', str(self.max_depth))
         ]
 
     @property
