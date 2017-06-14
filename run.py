@@ -49,13 +49,9 @@ def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path, sample
     return model
 
 
-SUFFIX = ''
-
-
-def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, dataset_name: str):
+def evaluate(dataset_train: Path, dataset_test: Path, checkpoint_dir: Path, log_dir_test: Path):
     eval_dataset = HorizontalDataset(dataset_train, dataset_test)
     eval_model = create_mutating_cnn(eval_dataset, checkpoint_dir, eval_dataset.sample_length)
-    log_dir_test = Path('logs') / (dataset_name + SUFFIX + '_test')
     operations.evaluate(eval_model, eval_dataset, checkpoint_dir, log_dir_test, feature_name='')
 
 
@@ -64,16 +60,18 @@ def main():
     logging.basicConfig(level=logging.INFO)
     root = Path('data') / 'UCR_TS_Archive_2015'
     dataset_name = sys.argv[1]
+    suffix = sys.argv[2] if len(sys.argv) > 2 else ''
 
-    checkpoint_dir = Path('checkpoints') / (dataset_name + SUFFIX)
-    log_dir_train = Path('logs') / (dataset_name + SUFFIX + '_train')
+    checkpoint_dir = Path('checkpoints') / (dataset_name + suffix)
+    log_dir_train = Path('logs') / (dataset_name + suffix + '_train')
+    log_dir_test = Path('logs') / (dataset_name + suffix + '_test')
 
     dataset_train = root / dataset_name / (dataset_name + '_TRAIN')
     dataset_test = root / dataset_name / (dataset_name + '_TEST')
     dataset = HorizontalDataset(dataset_train, dataset_test)
 
     def evaluate_process():
-        proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, dataset_name))
+        proc = Process(target=evaluate, args=(dataset_train, dataset_test, checkpoint_dir, log_dir_test))
         proc.start()
 
     def visualize():
@@ -92,7 +90,7 @@ def main():
                                     steps_per_checkpoint=1000,
                                     feature_name='',
                                     checkpoint_written_callback=evaluate_process,
-                                    should_render_graph=False)
+                                    should_render_graph=True)
 
     train()
 
