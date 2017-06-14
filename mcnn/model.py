@@ -447,6 +447,7 @@ class VariableNode(Node):
         for parent in self.parents:
             assert isinstance(parent, Node)
             parent.children.remove(self)
+        self.parents.clear()
         self._remove_outputs(np.arange(self.output_count))
         for child in self.children:
             assert isinstance(child, VariableNode)
@@ -454,6 +455,7 @@ class VariableNode(Node):
                 child.delete()
             else:
                 child.parents.remove(self)
+        self.children.clear()
 
         logging.info('Deleted node {}'.format(self.uuid))
 
