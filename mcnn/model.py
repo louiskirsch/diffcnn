@@ -491,6 +491,8 @@ class VariableNode(Node):
         return file
 
     def _add_graph_misc(self, session: tf.Session, graph: graphviz.Digraph, step: int, tmp_directory: Path):
+        if self.penalty is None:
+            return
         try:
             img_path = self.render_penalties(session, tmp_directory, step)
             node_name = self.uuid + '_penalties'
@@ -504,9 +506,10 @@ class VariableNode(Node):
         if self._scope is not None:
             # TODO don't access via name
             penalty_sum = session.graph.get_tensor_by_name('training/penalty_sum:0')
+            if self.penalty is not None:
+                properties.append(('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)))
             properties.extend([
                 ('below_thres_count', self._below_del_threshold_count.eval(session=session)),
-                ('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)),
                 #('outgoing-weights', np.array_str(self._outgoing_weights.eval(session=session))),
                 #('penalty-per-output', np.array_str(self._penalty_per_output.eval(session=session)))
             ])
@@ -624,9 +627,10 @@ class FullyConnectedNode(VariableNode):
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
-            squared_outgoing_weights = tf.square(outgoing_weights)
-            self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
-            self._penalty = tf.reduce_sum(self._penalty_per_output)
+            if self.can_mutate:
+                squared_outgoing_weights = tf.square(outgoing_weights)
+                self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
+                self._penalty = tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
