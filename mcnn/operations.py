@@ -213,7 +213,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
-                if should_render_graph:
+                if should_render_graph and step % 100 == 0:
                     model.render_graph(session, checkpoint_dir / 'graph_renderings')
 
         model.build()
