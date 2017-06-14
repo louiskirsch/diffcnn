@@ -266,6 +266,7 @@ class Node:
 
     def to_graphviz(self, session: tf.Session, step: int, tmp_directory: Path) -> graphviz.Digraph:
         graph = graphviz.Digraph('mutating-cnn')
+        graph.attr(rankdir='LR')
         nodes = self.all_descendants()
         for node in nodes:
             label = node.label
