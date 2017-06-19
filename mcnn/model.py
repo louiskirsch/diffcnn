@@ -418,7 +418,7 @@ class VariableNode(Node):
         self._add_outputs(self.OUTPUT_INCREMENT)
 
     def shrink(self, deletion_indices: np.ndarray):
-        active_outputs = self.output_count - deletion_indices.shape[0]
+        active_outputs = self.output_count - deletion_indices.shape[0] - self.NEURONS_BELOW_DEL_THRESHOLD
         if active_outputs < self.DELETE_NODE_THRESHOLD:
             self.delete()
         else:
