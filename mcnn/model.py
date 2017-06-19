@@ -353,7 +353,7 @@ class VariableNode(Node):
     # TODO how to get rid of this hyperparameter?
     L1_NORM_PENALTY_STRENGTH = 1e-4
 
-    DELETE_NODE_THRESHOLD = 8
+    DELETE_NODE_THRESHOLD = 1
     OUTPUT_INCREMENT = 16
 
     def __init__(self, parents: List):
