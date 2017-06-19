@@ -484,7 +484,7 @@ class VariableNode(Node):
             raise AssertionError('Node not created in graph')
         penalties = self._penalty_per_output.eval(session=session)
         img_width = len(penalties)
-        img_height = img_width // 3
+        img_height = math.ceil(img_width / 3)
 
         img = np.broadcast_to(penalties, (img_height, img_width))
         img = np.broadcast_to(img, (3, img_height, img_width))
