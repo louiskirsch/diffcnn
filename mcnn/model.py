@@ -163,8 +163,9 @@ class McnnConfiguration:
 
 class NodeBuildConfiguration:
 
-    def __init__(self, exponential_depth_penalty: bool = True):
+    def __init__(self, exponential_depth_penalty: bool = False, linear_depth_penalty: bool = True):
         self.exponential_depth_penalty = exponential_depth_penalty
+        self.linear_depth_penalty = linear_depth_penalty
 
 
 class Node:
@@ -778,7 +779,9 @@ class ConvNode(VariableNode):
             squared_outgoing_weights = tf.square(outgoing_weights)
             self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
             self._penalty = tf.reduce_sum(self._penalty_per_output)
-            if configuration.exponential_depth_penalty:
+            if configuration.linear_depth_penalty:
+                self._penalty *= self.max_depth
+            elif configuration.exponential_depth_penalty:
                 self._penalty *= 2 ** self.max_depth
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
