@@ -43,7 +43,7 @@ def create_auto_cnn(dataset: HorizontalDataset) -> Model:
 def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path, sample_length: int) -> MutatingCnnModel:
     model = MutatingCnnModel(batch_size=64,
                              num_classes=dataset.target_classes_count,
-                             learning_rate=1e-4,
+                             learning_rate=1e-3,
                              sample_length=sample_length,
                              checkpoint_dir=checkpoint_dir)
     return model
