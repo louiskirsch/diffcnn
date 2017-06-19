@@ -356,10 +356,12 @@ class VariableNode(Node):
     DELETE_NODE_THRESHOLD = 1
     OUTPUT_INCREMENT = 16
 
-    def __init__(self, parents: List):
+    def __init__(self, parents: List, non_linearity: bool = True):
         super().__init__(parents)
         self._saved_filter = None
         self._saved_bias = None
+        self.can_mutate = True
+        self.non_linearity = non_linearity
 
     # noinspection PyAttributeOutsideInit
     def reset(self):
@@ -379,7 +381,9 @@ class VariableNode(Node):
         s = super().__getstate__()
         s.update({
             'saved_filter': self._saved_filter,
-            'saved_bias': self._saved_bias
+            'saved_bias': self._saved_bias,
+            'can_mutate': self.can_mutate,
+            'non_linearity': self.non_linearity
         })
         return s
 
@@ -387,9 +391,13 @@ class VariableNode(Node):
         super().__setstate__(state)
         self._saved_filter = state['saved_filter']
         self._saved_bias = state['saved_bias']
+        self.can_mutate = state['can_mutate']
+        self.non_linearity = state['non_linearity']
         self.reset()
 
     def mutate(self, session: tf.Session, allow_node_creation: bool):
+        if not self.can_mutate:
+            return
         count = self._below_del_threshold_count.eval(session=session)
         logging.info('{} neurons below del threshold'.format(count))
         if count < self.NEURONS_BELOW_DEL_THRESHOLD:
@@ -526,9 +534,8 @@ class VariableNode(Node):
 class FullyConnectedNode(VariableNode):
 
     def __init__(self, parents: List, fixed_output_count: int = None, non_linearity: bool = True):
-        super().__init__(parents)
+        super().__init__(parents, non_linearity)
         self.can_mutate = fixed_output_count is None
-        self.non_linearity = non_linearity
         self._output_count = fixed_output_count or 16
 
     @property
@@ -541,22 +548,12 @@ class FullyConnectedNode(VariableNode):
 
     def __setstate__(self, state):
         super().__setstate__(state)
-        self.can_mutate = state['can_mutate']
         self._output_count = state['output_count']
-        self.non_linearity = state['non_linearity']
 
     def __getstate__(self):
         s = super().__getstate__()
-        s.update({
-            'can_mutate': self.can_mutate,
-            'output_count': self._output_count,
-            'non_linearity': self.non_linearity
-        })
+        s['output_count'] = self._output_count
         return s
-
-    def mutate(self, session: tf.Session, allow_node_creation: bool):
-        if self.can_mutate:
-            super().mutate(session, allow_node_creation)
 
     def _add_outputs(self, add_outputs_count: int):
         if self._scope is None:
@@ -657,10 +654,11 @@ class ConvNode(VariableNode):
     # TODO any other way than doing this probabilistically?
     NEW_NODE_PROBABILITY = 0.1
 
-    def __init__(self, parents: List):
-        super().__init__(parents)
+    def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True):
+        super().__init__(parents, non_linearity)
+        self.can_mutate = fixed_output_channel_count is None
         self.stride = random.randint(1, 2)
-        self.channels_out = self.OUTPUT_INCREMENT
+        self.channels_out = fixed_output_channel_count or self.OUTPUT_INCREMENT
 
     @property
     def label(self) -> str:
@@ -767,7 +765,8 @@ class ConvNode(VariableNode):
                                    initializer=tf.constant_initializer(0.0))
             output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
             output = tf.nn.bias_add(output, bias)
-            output = tf.nn.relu(output, name='relu')
+            if self.non_linearity:
+                output = tf.nn.relu(output, name='relu')
 
             outgoing_weights = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
             tf.summary.histogram('outgoing_weight_sums', outgoing_weights)
@@ -776,13 +775,14 @@ class ConvNode(VariableNode):
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
-            squared_outgoing_weights = tf.square(outgoing_weights)
-            self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
-            self._penalty = tf.reduce_sum(self._penalty_per_output)
-            if configuration.linear_depth_penalty:
-                self._penalty *= self.max_depth
-            elif configuration.exponential_depth_penalty:
-                self._penalty *= 2 ** self.max_depth
+            if self.can_mutate:
+                squared_outgoing_weights = tf.square(outgoing_weights)
+                self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
+                self._penalty = tf.reduce_sum(self._penalty_per_output)
+                if configuration.linear_depth_penalty:
+                    self._penalty *= self.max_depth
+                elif configuration.exponential_depth_penalty:
+                    self._penalty *= 2 ** self.max_depth
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
@@ -799,7 +799,7 @@ class ConvNode(VariableNode):
 class MutatingCnnModel(Model):
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, probabilistic_depth_strategy: bool = False):
+                 checkpoint_dir: Path, probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True):
 
         nodes_file = (checkpoint_dir / 'nodes.pickle')
         if nodes_file.exists():
@@ -808,9 +808,13 @@ class MutatingCnnModel(Model):
         else:
             self.input_node = InputNode()
             first_conv_node = ConvNode([self.input_node])
-            fully_connected_node = FullyConnectedNode([first_conv_node])
-            self.terminus_node = FullyConnectedNode([fully_connected_node], fixed_output_count=num_classes,
-                                                    non_linearity=False)
+            if not global_avg_pool:
+                fully_connected_node = FullyConnectedNode([first_conv_node])
+                self.terminus_node = FullyConnectedNode([fully_connected_node], fixed_output_count=num_classes,
+                                                        non_linearity=False)
+            else:
+                self.terminus_node = ConvNode([first_conv_node], fixed_output_channel_count=num_classes,
+                                              non_linearity=False)
 
         self.probabilistic_depth_strategy = probabilistic_depth_strategy
 
@@ -820,7 +824,7 @@ class MutatingCnnModel(Model):
     def mutate(self, session: tf.Session):
         nodes = self.input_node.all_descendants()
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
-        last_node = self.max_depth_conv_node
+        last_node = self.max_depth_mutatable_conv_node
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert isinstance(node, VariableNode) and node.is_built()
@@ -832,7 +836,7 @@ class MutatingCnnModel(Model):
             self._add_node_if_all_used(session)
 
     def _add_node_if_all_used(self, session: tf.Session):
-        last_node = self.max_depth_conv_node
+        last_node = self.max_depth_mutatable_conv_node
         penalty = last_node.penalty.eval(session=session)
         if penalty >= VariableNode.DELETION_THRESHOLD:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
@@ -844,13 +848,13 @@ class MutatingCnnModel(Model):
         history.append(sum(node.output_count for node in nodes))
         # When the number of outputs didn't change over 3 iterations, create a new node
         if len(set(history)) <= 1:
-            self.max_depth_conv_node.create_new_node()
+            self.max_depth_mutatable_conv_node.create_new_node()
 
-    # noinspection PyTypeChecker
+    # noinspection PyTypeChecker,PyUnresolvedReferences
     @property
-    def max_depth_conv_node(self) -> ConvNode:
+    def max_depth_mutatable_conv_node(self) -> ConvNode:
         nodes = self.input_node.all_descendants()
-        conv_nodes = (node for node in nodes if isinstance(node, ConvNode))
+        conv_nodes = (node for node in nodes if isinstance(node, ConvNode) and node.can_mutate)
         return max(conv_nodes, key=lambda n: n.max_depth)
 
     def build(self):
@@ -899,8 +903,16 @@ class MutatingCnnModel(Model):
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
-            self.input_node.build_dag(input_2d, NodeBuildConfiguration())
+            self.input_node.build_dag(input_2d, NodeBuildConfiguration(linear_depth_penalty=False))
             output = self.terminus_node.output_tensor
+            assert isinstance(output, tf.Tensor)
+
+        # Remove width and height dimensions if no fully connected layer exists
+        output_shape = output.get_shape()
+        if output_shape.ndims == 4:
+            ksize = [1] + output_shape.as_list()[1:3] + [1]
+            output = tf.nn.avg_pool(output, ksize=ksize, strides=ksize, padding='VALID')
+            output = tf.squeeze(output, axis=[1, 2])
 
         nodes = self.input_node.all_descendants()
         tf.summary.scalar('node_count', len(nodes))
