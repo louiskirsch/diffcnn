@@ -756,10 +756,10 @@ class ConvNode(VariableNode):
         with tf.variable_scope('conv_node_' + self.uuid) as scope:
             self._scope = scope
 
-            channels_in = input_tensor.get_shape().as_list()[-1]
+            channels_in = input_tensor.get_shape()[-1]
 
-            filter_shape = [1, self.FILTER_WIDTH, channels_in, self.channels_out]
-            filter = tf.Variable(self.weight_initialization(filter_shape) * 10, name='filter')
+            filter = tf.get_variable('filter', shape=(1, self.FILTER_WIDTH, channels_in, self.channels_out),
+                                     dtype=tf.float32, initializer=xavier_initializer())
             tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
             bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
