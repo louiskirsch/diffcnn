@@ -71,7 +71,7 @@ def main():
         operations.visualize_lrp(model, dataset, checkpoint_dir, feature_name='', heatmap_save_path=heatmap_save_path)
 
     def train():
-        train_sample_length = int(0.9 * dataset.sample_length)
+        train_sample_length = dataset.sample_length
         model = create_mutating_cnn(dataset, checkpoint_dir, train_sample_length)
         operations.train_and_mutate(model,
                                     dataset,
