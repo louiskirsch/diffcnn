@@ -51,7 +51,9 @@ class Model:
             self.loss = self._define_loss(cross_entropy)
             tf.summary.scalar('loss', self.loss)
             optimizer = tf.train.AdamOptimizer(self.learning_rate)
-            self.train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
+            train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
+            with tf.control_dependencies([train_op]):
+                self.train_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
 
         with tf.variable_scope('evaluation'):
             correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
@@ -163,7 +165,9 @@ class McnnConfiguration:
 
 class NodeBuildConfiguration:
 
-    def __init__(self, exponential_depth_penalty: bool = False, linear_depth_penalty: bool = True):
+    def __init__(self, is_training: tf.Tensor, exponential_depth_penalty: bool = False,
+                 linear_depth_penalty: bool = True):
+        self.is_training = is_training
         self.exponential_depth_penalty = exponential_depth_penalty
         self.linear_depth_penalty = linear_depth_penalty
 
@@ -346,6 +350,7 @@ class InputNode(Node):
 class VariableNode(Node):
 
     WEIGHT_COLLECTION = 'NODE_WEIGHT_COLLECTION'
+    EMA_COLLECTION = 'EMA_COLLECTION'
 
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
@@ -360,6 +365,9 @@ class VariableNode(Node):
         super().__init__(parents)
         self._saved_filter = None
         self._saved_bias = None
+        self._saved_scale = None
+        self._saved_ema_mean = None
+        self._saved_ema_variance = None
         self.can_mutate = True
         self.non_linearity = non_linearity
 
@@ -369,19 +377,27 @@ class VariableNode(Node):
         self._scope = None
         self._filter_var = None
         self._bias_var = None
+        self._scale_var = None
+        self._ema_mean_var = None
+        self._ema_variance_var = None
         self._filter_query = None
         self._bias_query = None
+        self._scale_query = None
+        self._ema_mean_query = None
+        self._ema_variance_query = None
         self._below_del_threshold_count = None
         self._below_del_threshold_indices = None
         self._penalty_per_output = None
         self._penalty = None
-        self._outgoing_weights = None
 
     def __getstate__(self):
         s = super().__getstate__()
         s.update({
             'saved_filter': self._saved_filter,
             'saved_bias': self._saved_bias,
+            'saved_scale': self._saved_scale,
+            'saved_ema_mean': self._saved_ema_mean,
+            'saved_ema_variance': self._saved_ema_variance,
             'can_mutate': self.can_mutate,
             'non_linearity': self.non_linearity
         })
@@ -391,6 +407,9 @@ class VariableNode(Node):
         super().__setstate__(state)
         self._saved_filter = state['saved_filter']
         self._saved_bias = state['saved_bias']
+        self._saved_scale = state['saved_scale']
+        self._saved_ema_mean = state['saved_ema_mean']
+        self._saved_ema_variance = state['saved_ema_variance']
         self.can_mutate = state['can_mutate']
         self.non_linearity = state['non_linearity']
         self.reset()
@@ -413,6 +432,9 @@ class VariableNode(Node):
             return
         self._saved_filter = self._filter_query.eval(session=session)
         self._saved_bias = self._bias_query.eval(session=session)
+        self._saved_scale = self._scale_query.eval(session=session)
+        self._saved_ema_mean = self._ema_mean_query.eval(session=session)
+        self._saved_ema_variance = self._ema_variance_query.eval(session=session)
 
     def restore_variables(self, session: tf.Session):
         if self._scope is None or self._saved_bias is None or self._saved_filter is None:
@@ -420,6 +442,9 @@ class VariableNode(Node):
         with tf.variable_scope(self._scope):
             self._filter_var.assign(self._saved_filter).op.run(session=session)
             self._bias_var.assign(self._saved_bias).op.run(session=session)
+            self._scale_var.assign(self._saved_scale).op.run(session=session)
+            self._ema_mean_var.assign(self._saved_ema_mean).op.run(session=session)
+            self._ema_variance_var.assign(self._saved_ema_variance).op.run(session=session)
         logging.info('Restored variables for {}'.format(self.uuid))
 
     def grow(self, allow_node_creation: bool):
@@ -524,9 +549,7 @@ class VariableNode(Node):
             if self.penalty is not None:
                 properties.append(('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)))
             properties.extend([
-                ('below_thres_count', self._below_del_threshold_count.eval(session=session)),
-                #('outgoing-weights', np.array_str(self._outgoing_weights.eval(session=session))),
-                #('penalty-per-output', np.array_str(self._penalty_per_output.eval(session=session)))
+                ('below_thres_count', self._below_del_threshold_count.eval(session=session))
             ])
         return properties
 
@@ -561,9 +584,16 @@ class FullyConnectedNode(VariableNode):
         with tf.variable_scope(self._scope):
             new_weights = self.weight_initialization([self.input_count, add_outputs_count])
             new_bias = self.bias_initialization([add_outputs_count])
+            new_scale = tf.ones([add_outputs_count])
+            new_ema_mean = tf.zeros([add_outputs_count])
+            new_ema_variance = tf.zeros([add_outputs_count])
+
             # Concat at output_count
             self._filter_query = tf.concat([self._filter_query, new_weights], axis=-1)
             self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
+            self._scale_query = tf.concat([self._scale_query, new_scale], axis=0)
+            self._ema_mean_query = tf.concat([self._ema_mean_query, new_ema_mean], axis=0)
+            self._ema_variance_query = tf.concat([self._ema_variance_query, new_ema_variance], axis=0)
         self._output_count += add_outputs_count
         self._notify_output_addition(add_outputs_count)
 
@@ -595,6 +625,9 @@ class FullyConnectedNode(VariableNode):
             mask[indices] = 0
             self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
             self._bias_query = tf.boolean_mask(self._bias_query, mask)
+            self._scale_query = tf.boolean_mask(self._scale_query, mask)
+            self._ema_mean_query = tf.boolean_mask(self._ema_mean_query, mask)
+            self._ema_variance_query = tf.boolean_mask(self._ema_variance_query, mask)
         deletion_count = indices.shape[0]
         self._output_count -= deletion_count
         self._notify_output_removal(indices)
@@ -619,21 +652,28 @@ class FullyConnectedNode(VariableNode):
                                      initializer=xavier_initializer())
             bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
+            scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
+                                    initializer=tf.constant_initializer(1.0))
             output = tf.matmul(input_tensor, weight)
-            output = tf.nn.bias_add(output, bias)
+
+            ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
+            batch_mean, batch_variance = tf.nn.moments(output, axes=[0], name='moments')
+            update_ema = ema.apply([batch_mean, batch_variance])
+            tf.add_to_collection(self.EMA_COLLECTION, update_ema)
+            mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
+            variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
+
+            output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-8, name='batch_norm')
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
 
-            outgoing_weights = tf.reduce_sum(tf.abs(weight), axis=0)
-            tf.summary.histogram('outgoing_weight_sums', outgoing_weights)
-
-            below_del_threshold = outgoing_weights < self.DELETION_THRESHOLD
+            below_del_threshold = tf.abs(scale) < self.DELETION_THRESHOLD
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
             if self.can_mutate:
-                squared_outgoing_weights = tf.square(outgoing_weights)
-                self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
+                squared_scales = tf.square(scale)
+                self._penalty_per_output = squared_scales / (1e-2 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
@@ -641,9 +681,14 @@ class FullyConnectedNode(VariableNode):
 
         self._filter_var = weight
         self._bias_var = bias
+        self._scale_var = scale
+        self._ema_mean_var = ema.average(batch_mean)
+        self._ema_variance_var = ema.average(batch_variance)
         self._filter_query = weight
         self._bias_query = bias
-        self._outgoing_weights = outgoing_weights
+        self._scale_query = scale
+        self._ema_mean_query = ema.average(batch_mean)
+        self._ema_variance_query = ema.average(batch_variance)
         self.output_tensor = output
         return output
 
@@ -651,7 +696,6 @@ class FullyConnectedNode(VariableNode):
 class ConvNode(VariableNode):
 
     FILTER_WIDTH = 16
-    # TODO any other way than doing this probabilistically?
     NEW_NODE_PROBABILITY = 0.1
 
     def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True):
@@ -708,9 +752,15 @@ class ConvNode(VariableNode):
         with tf.variable_scope(self._scope):
             new_filters = self.weight_initialization([1, self.FILTER_WIDTH, self.input_count, add_channels])
             new_bias = self.bias_initialization([add_channels])
+            new_scale = tf.ones([add_channels])
+            new_ema_mean = tf.zeros([add_channels])
+            new_ema_variance = tf.zeros([add_channels])
             # Concat at channels_out
             self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
             self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
+            self._scale_query = tf.concat([self._scale_query, new_scale], axis=0)
+            self._ema_mean_query = tf.concat([self._ema_mean_query, new_ema_mean], axis=0)
+            self._ema_variance_query = tf.concat([self._ema_variance_query, new_ema_variance], axis=0)
         self.channels_out += add_channels
         self._notify_output_addition(add_channels)
 
@@ -745,11 +795,14 @@ class ConvNode(VariableNode):
             mask[indices] = 0
             self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
             self._bias_query = tf.boolean_mask(self._bias_query, mask)
+            self._scale_query = tf.boolean_mask(self._scale_query, mask)
+            self._ema_mean_query = tf.boolean_mask(self._ema_mean_query, mask)
+            self._ema_variance_query = tf.boolean_mask(self._ema_variance_query, mask)
         deletion_count = indices.shape[0]
         self.channels_out -= deletion_count
         self._notify_output_removal(indices)
 
-    def _build(self, configuration):
+    def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
         # noinspection PyTypeChecker
         input_tensor = self._concat(tuple(node.output_tensor for node in self.parents))
@@ -763,21 +816,28 @@ class ConvNode(VariableNode):
             tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
             bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
+            scale = tf.get_variable('scale', shape=(self.channels_out,), dtype=tf.float32,
+                                    initializer=tf.constant_initializer(1.0))
             output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
-            output = tf.nn.bias_add(output, bias)
+
+            ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
+            batch_mean, batch_variance = tf.nn.moments(output, axes=[0, 1, 2], name='moments')
+            update_ema = ema.apply([batch_mean, batch_variance])
+            tf.add_to_collection(self.EMA_COLLECTION, update_ema)
+            mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
+            variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
+
+            output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-8, name='batch_norm')
             if self.non_linearity:
                 output = tf.nn.relu(output, name='relu')
 
-            outgoing_weights = tf.reduce_sum(tf.abs(filter), axis=[0, 1, 2])
-            tf.summary.histogram('outgoing_weight_sums', outgoing_weights)
-
-            below_del_threshold = outgoing_weights < self.DELETION_THRESHOLD
+            below_del_threshold = tf.abs(scale) < self.DELETION_THRESHOLD
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
             if self.can_mutate:
-                squared_outgoing_weights = tf.square(outgoing_weights)
-                self._penalty_per_output = squared_outgoing_weights / (1e-2 + squared_outgoing_weights)
+                squared_scales = tf.square(scale)
+                self._penalty_per_output = squared_scales / (1e-2 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
                 if configuration.linear_depth_penalty:
                     self._penalty *= self.max_depth
@@ -789,9 +849,14 @@ class ConvNode(VariableNode):
 
         self._filter_var = filter
         self._bias_var = bias
+        self._scale_var = scale
+        self._ema_mean_var = ema.average(batch_mean)
+        self._ema_variance_var = ema.average(batch_variance)
         self._filter_query = filter
         self._bias_query = bias
-        self._outgoing_weights = outgoing_weights
+        self._scale_query = scale
+        self._ema_mean_query = ema.average(batch_mean)
+        self._ema_variance_query = ema.average(batch_variance)
         self.output_tensor = output
         return output
 
@@ -901,9 +966,12 @@ class MutatingCnnModel(Model):
         self.saver = tf.train.Saver(var_list=vars)
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+        self.is_training = tf.placeholder(tf.bool, name='is_training')
+
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
-            self.input_node.build_dag(input_2d, NodeBuildConfiguration(linear_depth_penalty=False))
+            config = NodeBuildConfiguration(self.is_training, linear_depth_penalty=False)
+            self.input_node.build_dag(input_2d, config)
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
 
@@ -922,6 +990,11 @@ class MutatingCnnModel(Model):
         logits = tf.identity(output, name='logits')
 
         return logits
+
+    def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
+             update_summary=False):
+        feed_dict[self.is_training] = train
+        return super().step(session, feed_dict, loss, train, logits, correct_count, update_summary)
 
 
 class McnnModel(Model):

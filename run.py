@@ -36,7 +36,8 @@ def create_mutating_cnn(dataset: HorizontalDataset, checkpoint_dir: Path, sample
                              num_classes=dataset.target_classes_count,
                              learning_rate=1e-3,
                              sample_length=sample_length,
-                             checkpoint_dir=checkpoint_dir)
+                             checkpoint_dir=checkpoint_dir,
+                             global_avg_pool=True)
     return model
 
 
