@@ -924,34 +924,6 @@ class MutatingCnnModel(Model):
         return logits
 
 
-class AutoCnnModel(Model):
-    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, filter_width: int, batch_size: int):
-        self.filter_width = filter_width
-        super().__init__(sample_length, learning_rate, num_classes, batch_size)
-
-    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
-        output = input_2d
-
-        for layer_index in range(int(math.log2(self.sample_length))):
-            with tf.variable_scope('conv_{}'.format(layer_index)):
-                channels_in = 1 if layer_index == 0 else 256
-                channels_out = 256
-                filter = tf.get_variable('filter', shape=(1, self.filter_width, channels_in, channels_out),
-                                         dtype=tf.float32, initializer=xavier_initializer())
-                bias = tf.get_variable('bias', shape=(channels_out,), dtype=tf.float32,
-                                       initializer=tf.constant_initializer(0.0))
-                output = tf.nn.conv2d(output, filter, strides=[1, 1, 2, 1], padding='SAME')
-                output = tf.nn.bias_add(output, bias)
-                output = tf.nn.relu(output, name='relu')
-
-        output = tf.reshape(output, shape=(self.dynamic_batch_size, -1))
-        output = self._full_fullyconnected(output, 512, 256, activation=tf.nn.relu)
-        logits = self._full_fullyconnected(output, 256, self.num_classes)
-        logits = tf.identity(logits, name='logits')
-
-        return logits
-
-
 class McnnModel(Model):
 
     def __init__(self, batch_size: int, learning_rate: float, sample_length: int,

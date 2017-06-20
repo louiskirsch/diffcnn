@@ -18,16 +18,6 @@ def create_session() -> tf.Session:
     return session
 
 
-def _evaluate_batch(session: tf.Session, model: Model, input: np.ndarray, labels: np.ndarray):
-    feed_dict = {
-        model.input: input,
-        model.labels: labels
-    }
-    global_step, loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True)
-    accuracy = correct_count / model.batch_size
-    print('[Test]  Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
-
-
 def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path,
              feature_name: str):
 
@@ -153,7 +143,6 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                                                                  correct_count=True, update_summary=True)
                 accuracy = correct_count / model.batch_size
                 print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
-                _evaluate_batch(session, model, *next(test_sample_iterator))
                 if save:
                     model.save(session, checkpoint_dir)
                     logging.info('Model saved')
@@ -220,53 +209,3 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
         logging.info('Model rebuilt')
         steps_left -= iterate_step_count
 
-
-def deconv(model: Model, dataset: Dataset, sample_count: int, checkpoint_dir: Path, feature_name: str):
-    from cnnvis.deconv import Deconvolutionizer
-    import matplotlib.colors
-    import matplotlib.pyplot as plt
-
-    with create_session() as session:
-
-        model.restore(session, checkpoint_dir)
-        deconvolutionizer = Deconvolutionizer(session, model.input, model.batch_size)
-
-        train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
-                                                        sample_length=model.sample_length, loop=False)
-
-        samples = list(itertools.islice(train_sample_generator, sample_count // model.batch_size))
-
-        analyze_layers = ['full/logits', 'relu']
-
-        for idx, (input, label) in enumerate(samples):
-            ids = list(range(idx * model.batch_size, (idx + 1) * model.batch_size))
-            feed_dict = {
-                model.input: input,
-                deconvolutionizer.input_ids: ids
-            }
-            deconvolutionizer.track_samples(feed_dict, analyze_layers)
-
-        def create_dict_by_ids(ids: np.ndarray):
-            stacked = np.stack([samples[i // model.batch_size][0][i % model.batch_size] for i in ids], axis=0)
-            return {
-                model.input: stacked
-            }
-
-        logging.info('Visualizing top activations')
-        reconstructions = deconvolutionizer.visualize_top_activations(create_dict_by_ids, analyze_layers)
-
-        color_map = matplotlib.colors.LinearSegmentedColormap.from_list('heat', [(0, 0, 0), (1, 0, 0)])
-
-        for reconstruction in reconstructions:
-            orig = reconstruction.orig_data
-            heat = reconstruction.data
-            heat = np.clip((heat - np.mean(heat)) / np.std(heat), 0, 1)
-            length = orig.shape[0]
-            x = range(length)
-            y = orig
-            plt.plot(y, c='black')
-            plt.scatter(x, y, c=heat, cmap=color_map)
-            plt.title(reconstruction.title)
-            #plt.show()
-            plt.savefig('plots/' + reconstruction.file_name)
-            plt.close()

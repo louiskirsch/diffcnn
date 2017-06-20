@@ -5,7 +5,7 @@ import sys
 from multiprocessing import Process
 
 import mcnn.operations as operations
-from mcnn.model import McnnModel, McnnConfiguration, Model, AutoCnnModel, MutatingCnnModel
+from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel
 from mcnn.samples import HorizontalDataset, Dataset
 
 
@@ -28,15 +28,6 @@ def create_mcnn(dataset: Dataset) -> Model:
                       learning_rate=1e-3,
                       sample_length=sample_length,
                       mcnn_configuration=cfg)
-    return model
-
-
-def create_auto_cnn(dataset: HorizontalDataset) -> Model:
-    model = AutoCnnModel(batch_size=64,
-                         num_classes=dataset.target_classes_count,
-                         learning_rate=1e-3,
-                         sample_length=dataset.sample_length,
-                         filter_width=4)
     return model
 
 
