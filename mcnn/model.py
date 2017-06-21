@@ -348,7 +348,6 @@ class InputNode(Node):
 
 class VariableNode(Node):
 
-    WEIGHT_COLLECTION = 'NODE_WEIGHT_COLLECTION'
     EMA_COLLECTION = 'EMA_COLLECTION'
 
     # Parameters from 2016 Miconi
@@ -631,44 +630,37 @@ class VariableNode(Node):
                 if slot_var is not None:
                     self._mask_input(slot_var, mask).run(session=session)
 
+    def _shape_input(self, input_tensor: tf.Tensor) -> tf.Tensor:
+        return input_tensor
 
-class FullyConnectedNode(VariableNode):
+    @abstractmethod
+    def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
+        raise NotImplementedError()
 
-    def __init__(self, parents: List, fixed_output_count: int = None, non_linearity: bool = True):
-        super().__init__(parents, non_linearity)
-        self.can_mutate = fixed_output_count is None
-        self._output_count = fixed_output_count or 16
-
-    @property
-    def label(self) -> str:
-        return 'fullyconnected_node'
+    @abstractmethod
+    def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
+        raise NotImplementedError()
 
     def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
         # noinspection PyTypeChecker
         input_tensor = self._concat(tuple(node.output_tensor for node in self.parents))
-        with tf.variable_scope('fullyconnected_node_' + self.uuid) as scope:
+        with tf.variable_scope(self.label + '_' + self.uuid) as scope:
             self._scope = scope
 
-            # Pool and reshape if not compatible
-            if input_tensor.get_shape().ndims > 2:
-                # TODO maxpool instead?
-                input_tensor = tf.reduce_max(input_tensor, axis=2, keep_dims=True)
-                filter_count = input_tensor.get_shape().as_list()[-1]
-                input_tensor = tf.reshape(input_tensor, shape=(-1, filter_count))
+            input_tensor = self._shape_input(input_tensor)
 
-            input_size = input_tensor.get_shape()[-1]
-
-            weight = tf.get_variable('weight', shape=(input_size, self._output_count), dtype=tf.float32,
+            weight_shape = self.get_weight_shape(input_tensor)
+            weight = tf.get_variable('weight', shape=weight_shape, dtype=tf.float32,
                                      initializer=xavier_initializer())
             bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
             scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
                                     initializer=tf.constant_initializer(1.0))
-            output = tf.matmul(input_tensor, weight)
+            output = self._apply_op(input_tensor, weight)
 
             ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
-            batch_mean, batch_variance = tf.nn.moments(output, axes=[0], name='moments')
+            batch_mean, batch_variance = tf.nn.moments(output, axes=list(range(len(weight_shape) - 1)), name='moments')
             update_ema = ema.apply([batch_mean, batch_variance])
             tf.add_to_collection(self.EMA_COLLECTION, update_ema)
             mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
@@ -686,6 +678,10 @@ class FullyConnectedNode(VariableNode):
                 squared_scales = tf.square(scale)
                 self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
+                if configuration.linear_depth_penalty:
+                    self._penalty *= self.max_depth
+                elif configuration.exponential_depth_penalty:
+                    self._penalty *= 2 ** self.max_depth
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
             tf.summary.scalar('output_count', self.output_count)
@@ -697,6 +693,34 @@ class FullyConnectedNode(VariableNode):
         self._ema_variance_var = ema.average(batch_variance)
         self.output_tensor = output
         return output
+
+
+class FullyConnectedNode(VariableNode):
+
+    def __init__(self, parents: List, fixed_output_count: int = None, non_linearity: bool = True):
+        super().__init__(parents, non_linearity)
+        self.can_mutate = fixed_output_count is None
+        self._output_count = fixed_output_count or 16
+
+    @property
+    def label(self) -> str:
+        return 'fullyconnected_node'
+
+    def _shape_input(self, input_tensor: tf.Tensor) -> tf.Tensor:
+        # Pool and reshape if not compatible
+        if input_tensor.get_shape().ndims > 2:
+            # TODO maxpool instead?
+            input_tensor = tf.reduce_max(input_tensor, axis=2, keep_dims=True)
+            filter_count = input_tensor.get_shape().as_list()[-1]
+            input_tensor = tf.reshape(input_tensor, shape=(-1, filter_count))
+        return input_tensor
+
+    def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
+        input_size = input_tensor.get_shape()[-1]
+        return [input_size, self.output_count]
+
+    def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
+        return tf.matmul(input_tensor, weight)
 
 
 class ConvNode(VariableNode):
@@ -746,58 +770,12 @@ class ConvNode(VariableNode):
             child.add_parent(new_conv)
         new_conv._notify_output_addition(session, optimizer, new_conv.output_count)
 
-    def _build(self, configuration: NodeBuildConfiguration):
-        super()._build(configuration)
-        # noinspection PyTypeChecker
-        input_tensor = self._concat(tuple(node.output_tensor for node in self.parents))
-        with tf.variable_scope('conv_node_' + self.uuid) as scope:
-            self._scope = scope
+    def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
+        channels_in = input_tensor.get_shape()[-1]
+        return [1, self.FILTER_WIDTH, channels_in, self._output_count]
 
-            channels_in = input_tensor.get_shape()[-1]
-
-            filter = tf.get_variable('filter', shape=(1, self.FILTER_WIDTH, channels_in, self._output_count),
-                                     dtype=tf.float32, initializer=xavier_initializer())
-            tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
-            bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
-                                   initializer=tf.constant_initializer(0.0))
-            scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
-                                    initializer=tf.constant_initializer(1.0))
-            output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
-
-            ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
-            batch_mean, batch_variance = tf.nn.moments(output, axes=[0, 1, 2], name='moments')
-            update_ema = ema.apply([batch_mean, batch_variance])
-            tf.add_to_collection(self.EMA_COLLECTION, update_ema)
-            mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
-            variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
-
-            output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-8, name='batch_norm')
-            if self.non_linearity:
-                output = tf.nn.relu(output, name='relu')
-
-            below_del_threshold = tf.abs(scale) < self.DELETION_THRESHOLD
-            self._below_del_threshold_indices = tf.where(below_del_threshold)
-            self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
-
-            if self.can_mutate:
-                squared_scales = tf.square(scale)
-                self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
-                self._penalty = tf.reduce_sum(self._penalty_per_output)
-                if configuration.linear_depth_penalty:
-                    self._penalty *= self.max_depth
-                elif configuration.exponential_depth_penalty:
-                    self._penalty *= 2 ** self.max_depth
-
-            tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
-            tf.summary.scalar('output_count', self.output_count)
-
-        self._filter_var = filter
-        self._bias_var = bias
-        self._scale_var = scale
-        self._ema_mean_var = ema.average(batch_mean)
-        self._ema_variance_var = ema.average(batch_variance)
-        self.output_tensor = output
-        return output
+    def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
+        return tf.nn.conv2d(input_tensor, weight, strides=[1, 1, self.stride, 1], padding='SAME')
 
 
 class MutatingCnnModel(Model):
