@@ -500,11 +500,9 @@ class VariableNode(Node):
         logging.info('Deleted node {}'.format(self.uuid))
 
     def weight_initialization(self, shape: List[int]):
-        dim_count = len(shape)
-        weights = tf.random_normal(shape, stddev=0.35)
-        norm = tf.reduce_sum(tf.abs(weights), axis=list(range(dim_count - 1)))
-        # Outgoing weights are exactly at deletion threshold
-        return weights / norm * self.DELETION_THRESHOLD
+        # TODO does it make sense to use xavier here? shape doesn't have the correct fan_in and fan_out
+        weights = xavier_initializer()(shape, dtype=tf.float32)
+        return weights
 
     def bias_initialization(self, shape: List[int]):
         return tf.zeros(shape)
