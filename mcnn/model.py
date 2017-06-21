@@ -8,13 +8,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import List, Dict, Set, Tuple, Union
 
+import itertools
 import numpy as np
 import scipy.misc
 import tensorflow as tf
 import pickle
 import logging
 import graphviz
-from lazy import lazy
 from tensorflow.contrib.layers import xavier_initializer
 
 
@@ -50,8 +50,8 @@ class Model:
                                                                            name='crossentropy')
             self.loss = self._define_loss(cross_entropy)
             tf.summary.scalar('loss', self.loss)
-            optimizer = tf.train.AdamOptimizer(self.learning_rate)
-            train_op = optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
+            self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
+            train_op = self.optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
             with tf.control_dependencies([train_op]):
                 self.train_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
 
@@ -66,13 +66,13 @@ class Model:
         self.init = tf.global_variables_initializer()
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
-        self._create_saver()
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         return tf.reduce_mean(cross_entropy, name='crossentropy_mean')
 
-    def _create_saver(self):
-        self.saver = tf.train.Saver()
+    def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
+        # By default, restore all
+        return None
 
     @abstractmethod
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
@@ -89,7 +89,8 @@ class Model:
         ckpt = tf.train.get_checkpoint_state(str(checkpoint_dir))
         if ckpt and ckpt.model_checkpoint_path:
             logging.info('Reading model parameters from {}'.format(ckpt.model_checkpoint_path))
-            self.saver.restore(session, ckpt.model_checkpoint_path)
+            saver = tf.train.Saver(var_list=self._vars_to_restore())
+            saver.restore(session, ckpt.model_checkpoint_path)
         else:
             raise FileNotFoundError('No checkpoint for evaluation found')
 
@@ -100,7 +101,8 @@ class Model:
             self.create(session)
 
     def save(self, session: tf.Session, checkpoint_dir: Path):
-        self.saver.save(session, str(checkpoint_dir / 'mcnn'), global_step=self.global_step.eval(session))
+        saver = tf.train.Saver()
+        saver.save(session, str(checkpoint_dir / 'mcnn'), global_step=self.global_step.eval(session))
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
              update_summary=False):
@@ -181,6 +183,7 @@ class Node:
             node.children.append(self)
         self.output_tensor = None
         self.max_depth = None
+        self.vars_saved = False
         self._update_uuid()
         self.reset()
 
@@ -188,7 +191,8 @@ class Node:
         return {
             'children': self.children,
             'parents': self.parents,
-            'uuid': self.uuid
+            'uuid': self.uuid,
+            'vars_saved': self.vars_saved
         }
 
     def __setstate__(self, state):
@@ -196,6 +200,7 @@ class Node:
         self.children = state['children']
         self.parents = state['parents']
         self.uuid = state['uuid']
+        self.vars_saved = state['vars_saved']
 
     def _update_uuid(self):
         self.uuid = str(uuid.uuid4())
@@ -228,12 +233,6 @@ class Node:
                 resized_tensors.append(tensor)
 
             return tf.concat(resized_tensors, axis=-1)
-
-    def save_variables(self, session: tf.Session):
-        pass
-
-    def restore_variables(self, session: tf.Session):
-        pass
 
     def reset(self):
         self.output_tensor = None
@@ -363,11 +362,6 @@ class VariableNode(Node):
 
     def __init__(self, parents: List, non_linearity: bool = True):
         super().__init__(parents)
-        self._saved_filter = None
-        self._saved_bias = None
-        self._saved_scale = None
-        self._saved_ema_mean = None
-        self._saved_ema_variance = None
         self.can_mutate = True
         self.non_linearity = non_linearity
 
@@ -380,11 +374,6 @@ class VariableNode(Node):
         self._scale_var = None
         self._ema_mean_var = None
         self._ema_variance_var = None
-        self._filter_query = None
-        self._bias_query = None
-        self._scale_query = None
-        self._ema_mean_query = None
-        self._ema_variance_query = None
         self._below_del_threshold_count = None
         self._below_del_threshold_indices = None
         self._penalty_per_output = None
@@ -393,106 +382,62 @@ class VariableNode(Node):
     def __getstate__(self):
         s = super().__getstate__()
         s.update({
-            'saved_filter': self._saved_filter,
-            'saved_bias': self._saved_bias,
-            'saved_scale': self._saved_scale,
-            'saved_ema_mean': self._saved_ema_mean,
-            'saved_ema_variance': self._saved_ema_variance,
             'can_mutate': self.can_mutate,
-            'non_linearity': self.non_linearity
+            'non_linearity': self.non_linearity,
+            'output_count': self._output_count
         })
         return s
 
     def __setstate__(self, state):
         super().__setstate__(state)
-        self._saved_filter = state['saved_filter']
-        self._saved_bias = state['saved_bias']
-        self._saved_scale = state['saved_scale']
-        self._saved_ema_mean = state['saved_ema_mean']
-        self._saved_ema_variance = state['saved_ema_variance']
+        self._output_count = state['output_count']
         self.can_mutate = state['can_mutate']
         self.non_linearity = state['non_linearity']
         self.reset()
 
-    def mutate(self, session: tf.Session, allow_node_creation: bool):
+    def mutate(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
         if not self.can_mutate:
             return
         count = self._below_del_threshold_count.eval(session=session)
         logging.info('{} neurons below del threshold'.format(count))
         if count < self.NEURONS_BELOW_DEL_THRESHOLD:
             logging.info('Growing')
-            self.grow(allow_node_creation)
+            self.grow(session, optimizer, allow_node_creation)
         elif count > self.NEURONS_BELOW_DEL_THRESHOLD:
             logging.info('Shrinking')
             deletion_indices = self._below_del_threshold_indices.eval(session=session)
-            self.shrink(deletion_indices[self.NEURONS_BELOW_DEL_THRESHOLD:])
+            self.shrink(session, optimizer, deletion_indices[self.NEURONS_BELOW_DEL_THRESHOLD:])
 
-    def save_variables(self, session: tf.Session):
-        if self._scope is None:
-            return
-        self._saved_filter = self._filter_query.eval(session=session)
-        self._saved_bias = self._bias_query.eval(session=session)
-        self._saved_scale = self._scale_query.eval(session=session)
-        self._saved_ema_mean = self._ema_mean_query.eval(session=session)
-        self._saved_ema_variance = self._ema_variance_query.eval(session=session)
+    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
+        self._add_outputs(session, optimizer, self.OUTPUT_INCREMENT)
 
-    def restore_variables(self, session: tf.Session):
-        if self._scope is None or self._saved_bias is None or self._saved_filter is None:
-            return
-        with tf.variable_scope(self._scope):
-            self._filter_var.assign(self._saved_filter).op.run(session=session)
-            self._bias_var.assign(self._saved_bias).op.run(session=session)
-            self._scale_var.assign(self._saved_scale).op.run(session=session)
-            self._ema_mean_var.assign(self._saved_ema_mean).op.run(session=session)
-            self._ema_variance_var.assign(self._saved_ema_variance).op.run(session=session)
-        logging.info('Restored variables for {}'.format(self.uuid))
-
-    def grow(self, allow_node_creation: bool):
-        self._add_outputs(self.OUTPUT_INCREMENT)
-
-    def shrink(self, deletion_indices: np.ndarray):
+    def shrink(self, session: tf.Session, optimizer: tf.train.Optimizer, deletion_indices: np.ndarray):
         active_outputs = self.output_count - deletion_indices.shape[0] - self.NEURONS_BELOW_DEL_THRESHOLD
         if active_outputs < self.DELETE_NODE_THRESHOLD:
-            self.delete()
+            self.delete(session, optimizer)
         else:
-            self._remove_outputs(deletion_indices)
+            self._remove_outputs(session, optimizer, deletion_indices)
 
-    @abstractmethod
-    def _add_outputs(self, add_outputs_count: int):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def _remove_outputs(self, indices: np.ndarray):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
-        raise NotImplementedError()
-
-    @abstractmethod
-    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
-        raise NotImplementedError()
-
-    def _notify_output_removal(self, indices: np.ndarray):
+    def _notify_output_removal(self, session: tf.Session, optimizer: tf.train.Optimizer, indices: np.ndarray):
         for child in self.children:
             assert isinstance(child, VariableNode)
-            child._remove_inputs(self, indices)
+            child._remove_inputs(session, optimizer, indices)
 
-    def _notify_output_addition(self, add_outputs_count: int):
+    def _notify_output_addition(self, session: tf.Session, optimizer: tf.train.Optimizer, add_outputs_count: int):
         for child in self.children:
             assert isinstance(child, VariableNode)
-            child._add_inputs(self, add_outputs_count)
+            child._add_inputs(session, optimizer, self, add_outputs_count)
 
-    def delete(self):
+    def delete(self, session: tf.Session, optimizer: tf.train.Optimizer):
         for parent in self.parents:
             assert isinstance(parent, Node)
             parent.children.remove(self)
         self.parents.clear()
-        self._remove_outputs(np.arange(self.output_count))
+        self._remove_outputs(session, optimizer, np.arange(self.output_count))
         for child in self.children:
             assert isinstance(child, VariableNode)
             if len(child.parents) == 1:
-                child.delete()
+                child.delete(session, optimizer)
             else:
                 child.parents.remove(self)
         self.children.clear()
@@ -555,6 +500,137 @@ class VariableNode(Node):
             ])
         return properties
 
+    @property
+    def output_count(self):
+        return self._output_count
+
+    def _concat_outputs_to_var(self, var: tf.Variable, concat: tf.Tensor) -> tf.Operation:
+        new_value = tf.concat([var, concat], axis=-1)
+        self._override_shape(var, new_value.shape)
+        return tf.assign(var, new_value, validate_shape=False).op
+
+    def _mask_outputs(self, var: tf.Variable, mask: np.ndarray, transpose: bool = False) -> tf.Operation:
+        if transpose:
+            var_to_mask = tf.transpose(var)
+        else:
+            var_to_mask = var
+        masked = tf.boolean_mask(var_to_mask, mask)
+        if transpose:
+            masked = tf.transpose(masked)
+        self._override_shape(var, masked.shape)
+        return tf.assign(var, masked, validate_shape=False).op
+
+    def _add_outputs(self, session: tf.Session, optimizer: tf.train.Optimizer, add_outputs_count: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            weight_shape = list(tf.shape(self._filter_var)[:-1].eval(session=session))
+            new_weights = self.weight_initialization(weight_shape + [add_outputs_count])
+            new_bias = self.bias_initialization([add_outputs_count])
+            new_scale = tf.ones([add_outputs_count])
+            new_ema_mean = tf.zeros([add_outputs_count])
+            new_ema_variance = tf.zeros([add_outputs_count])
+            pairs = [
+                (self._filter_var, new_weights),
+                (self._bias_var, new_bias),
+                (self._scale_var, new_scale),
+                (self._ema_mean_var, new_ema_mean),
+                (self._ema_variance_var, new_ema_variance)
+            ]
+
+            slots = optimizer.get_slot_names()
+            for (var, concat), slot in itertools.product(list(pairs), slots):
+                slot_var = optimizer.get_slot(var, slot)
+                if slot_var is not None:
+                    pairs.append((slot_var, tf.zeros_like(concat)))
+
+            # Concat at output_count
+            op = tf.group(*[self._concat_outputs_to_var(var, concat) for var, concat in pairs])
+            op.run(session=session)
+        self._output_count += add_outputs_count
+        self._notify_output_addition(session, optimizer, add_outputs_count)
+
+    def _remove_outputs(self, session: tf.Session, optimizer: tf.train.Optimizer, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            mask = np.ones([self.output_count], dtype=np.bool_)
+            mask[indices] = 0
+
+            vars = [self._filter_var, self._bias_var, self._scale_var, self._ema_mean_var, self._ema_variance_var]
+            slots = optimizer.get_slot_names()
+            for var, slot in itertools.product(list(vars), slots):
+                slot_var = optimizer.get_slot(var, slot)
+                if slot_var is not None:
+                    vars.append(slot_var)
+
+            op = tf.group(*[self._mask_outputs(var, mask, var.get_shape().ndims > 1) for var in vars])
+            op.run(session=session)
+        deletion_count = indices.shape[0]
+        self._output_count -= deletion_count
+        self._notify_output_removal(session, optimizer, indices)
+
+    def _add_inputs(self, session: tf.Session, optimizer: tf.train.Optimizer, parent_node: Node, add_inputs_count: int):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            filter_shape = list(tf.shape(self._filter_var).eval(session=session))
+            new_filters = self.weight_initialization(filter_shape[:-2] + [add_inputs_count] + [filter_shape[-1]])
+            offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
+
+            prefix_slices = [slice(None) for _ in filter_shape[:-2]]
+            from_slices = prefix_slices + [slice(None, offset)]
+            to_slices = prefix_slices + [slice(offset, None)]
+            new_tensors = [self._filter_var[from_slices],
+                           new_filters,
+                           self._filter_var[to_slices]]
+
+            # Concat at input dimension
+            new_value = tf.concat(new_tensors, axis=-2)
+            self._override_shape(self._filter_var, new_value.shape)
+            tf.assign(self._filter_var, new_value, validate_shape=False).op.run(session=session)
+
+            for slot in optimizer.get_slot_names():
+                slot_var = optimizer.get_slot(self._filter_var, slot)
+                if slot_var is not None:
+                    new_slot_values = [slot_var[from_slices],
+                                       tf.zeros_like(new_filters),
+                                       slot_var[to_slices]]
+                    new_value = tf.concat(new_slot_values, axis=-2)
+                    self._override_shape(slot_var, new_value.shape)
+                    tf.assign(slot_var, new_value, validate_shape=False).op.run(session=session)
+
+    def _override_shape(self, var: tf.Variable, new_shape: tf.TensorShape):
+        # TensorFlow fails to infer when we change the shape of a variable, enforce new shape here
+        var._ref()._shape = tf.TensorShape(new_shape)
+        var.value()._shape = tf.TensorShape(new_shape)
+
+    def _mask_input(self, var: tf.Variable, mask: np.ndarray) -> tf.Operation:
+        filter_rank = var.get_shape().ndims
+        if filter_rank > 2:
+            transposed = tf.transpose(var, perm=[2, 3, 0, 1])
+        else:
+            transposed = var
+        filtered = tf.boolean_mask(transposed, mask)
+        if filter_rank > 2:
+            filtered = tf.transpose(filtered, perm=[2, 3, 0, 1])
+        self._override_shape(var, filtered.shape)
+        return tf.assign(var, filtered, validate_shape=False).op
+
+    def _remove_inputs(self, session: tf.Session, optimizer: tf.train.Optimizer, indices: np.ndarray):
+        if self._scope is None:
+            return
+        with tf.variable_scope(self._scope):
+            deletion_count = indices.shape[0]
+            mask = np.ones([self.input_count + deletion_count], dtype=np.bool_)
+            mask[indices] = 0
+            self._mask_input(self._filter_var, mask).run(session=session)
+
+            for slot in optimizer.get_slot_names():
+                slot_var = optimizer.get_slot(self._filter_var, slot)
+                if slot_var is not None:
+                    self._mask_input(slot_var, mask).run(session=session)
+
 
 class FullyConnectedNode(VariableNode):
 
@@ -564,75 +640,8 @@ class FullyConnectedNode(VariableNode):
         self._output_count = fixed_output_count or 16
 
     @property
-    def output_count(self):
-        return self._output_count
-
-    @property
     def label(self) -> str:
         return 'fullyconnected_node'
-
-    def __setstate__(self, state):
-        super().__setstate__(state)
-        self._output_count = state['output_count']
-
-    def __getstate__(self):
-        s = super().__getstate__()
-        s['output_count'] = self._output_count
-        return s
-
-    def _add_outputs(self, add_outputs_count: int):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            new_weights = self.weight_initialization([self.input_count, add_outputs_count])
-            new_bias = self.bias_initialization([add_outputs_count])
-            new_scale = tf.ones([add_outputs_count])
-            new_ema_mean = tf.zeros([add_outputs_count])
-            new_ema_variance = tf.zeros([add_outputs_count])
-
-            # Concat at output_count
-            self._filter_query = tf.concat([self._filter_query, new_weights], axis=-1)
-            self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
-            self._scale_query = tf.concat([self._scale_query, new_scale], axis=0)
-            self._ema_mean_query = tf.concat([self._ema_mean_query, new_ema_mean], axis=0)
-            self._ema_variance_query = tf.concat([self._ema_variance_query, new_ema_variance], axis=0)
-        self._output_count += add_outputs_count
-        self._notify_output_addition(add_outputs_count)
-
-    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            new_weights = self.weight_initialization([add_inputs_count, self._output_count])
-            # TODO using output_count here relies on the fact that the maxpooling op reduces to time_length 1
-            offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
-            new_tensors = [self._filter_query[:offset], new_weights, self._filter_query[offset:]]
-            # Concat at input dimension
-            self._filter_query = tf.concat(new_tensors, axis=0)
-
-    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            deletion_count = indices.shape[0]
-            mask = np.ones([self.input_count + deletion_count], dtype=np.bool_)
-            mask[indices] = 0
-            self._filter_query = tf.boolean_mask(self._filter_query, mask)
-
-    def _remove_outputs(self, indices: np.ndarray):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            mask = np.ones([self.output_count], dtype=np.bool_)
-            mask[indices] = 0
-            self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
-            self._bias_query = tf.boolean_mask(self._bias_query, mask)
-            self._scale_query = tf.boolean_mask(self._scale_query, mask)
-            self._ema_mean_query = tf.boolean_mask(self._ema_mean_query, mask)
-            self._ema_variance_query = tf.boolean_mask(self._ema_variance_query, mask)
-        deletion_count = indices.shape[0]
-        self._output_count -= deletion_count
-        self._notify_output_removal(indices)
 
     def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
@@ -686,11 +695,6 @@ class FullyConnectedNode(VariableNode):
         self._scale_var = scale
         self._ema_mean_var = ema.average(batch_mean)
         self._ema_variance_var = ema.average(batch_variance)
-        self._filter_query = weight
-        self._bias_query = bias
-        self._scale_query = scale
-        self._ema_mean_query = ema.average(batch_mean)
-        self._ema_variance_query = ema.average(batch_variance)
         self.output_tensor = output
         return output
 
@@ -704,7 +708,7 @@ class ConvNode(VariableNode):
         super().__init__(parents, non_linearity)
         self.can_mutate = fixed_output_channel_count is None
         self.stride = random.randint(1, 2)
-        self.channels_out = fixed_output_channel_count or self.OUTPUT_INCREMENT
+        self._output_count = fixed_output_channel_count or self.OUTPUT_INCREMENT
 
     @property
     def label(self) -> str:
@@ -717,92 +721,30 @@ class ConvNode(VariableNode):
         ])
         return properties
 
-    @property
-    def output_count(self):
-        return self.channels_out
-
     def __getstate__(self):
         s = super().__getstate__()
         s.update({
             'stride': self.stride,
-            'channels_out': self.channels_out,
         })
         return s
 
     def __setstate__(self, state):
         super().__setstate__(state)
         self.stride = state['stride']
-        self.channels_out = state['channels_out']
 
-    def grow(self, allow_node_creation: bool):
+    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
         create_probabilistically = random.random() < self.NEW_NODE_PROBABILITY
         if allow_node_creation and create_probabilistically:
-            self.create_new_node()
+            self.create_new_node(session, optimizer)
         else:
-            super().grow(allow_node_creation)
+            super().grow(session, optimizer, allow_node_creation)
 
-    def create_new_node(self):
+    def create_new_node(self, session: tf.Session, optimizer: tf.train.Optimizer):
         old_children = list(self.children)
         new_conv = ConvNode([self])
         for child in old_children:
             child.add_parent(new_conv)
-        new_conv._notify_output_addition(new_conv.output_count)
-
-    def _add_outputs(self, add_channels: int):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            new_filters = self.weight_initialization([1, self.FILTER_WIDTH, self.input_count, add_channels])
-            new_bias = self.bias_initialization([add_channels])
-            new_scale = tf.ones([add_channels])
-            new_ema_mean = tf.zeros([add_channels])
-            new_ema_variance = tf.zeros([add_channels])
-            # Concat at channels_out
-            self._filter_query = tf.concat([self._filter_query, new_filters], axis=-1)
-            self._bias_query = tf.concat([self._bias_query, new_bias], axis=0)
-            self._scale_query = tf.concat([self._scale_query, new_scale], axis=0)
-            self._ema_mean_query = tf.concat([self._ema_mean_query, new_ema_mean], axis=0)
-            self._ema_variance_query = tf.concat([self._ema_variance_query, new_ema_variance], axis=0)
-        self.channels_out += add_channels
-        self._notify_output_addition(add_channels)
-
-    def _add_inputs(self, parent_node: Node, add_inputs_count: int):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            new_filters = self.weight_initialization([1, self.FILTER_WIDTH, add_inputs_count, self.channels_out])
-            offset = self._get_input_index(parent_node) + parent_node.output_count - add_inputs_count
-            new_tensors = [self._filter_query[:, :, :offset],
-                           new_filters,
-                           self._filter_query[:, :, offset:]]
-            # Concat at input dimension
-            self._filter_query = tf.concat(new_tensors, axis=2)
-
-    def _remove_inputs(self, parent_node: Node, indices: np.ndarray):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            deletion_count = indices.shape[0]
-            mask = np.ones([self.input_count + deletion_count], dtype=np.bool_)
-            mask[indices] = 0
-            transposed = tf.transpose(self._filter_query, perm=[2, 3, 0, 1])
-            filtered = tf.boolean_mask(transposed, mask)
-            self._filter_query = tf.transpose(filtered, perm=[2, 3, 0, 1])
-
-    def _remove_outputs(self, indices: np.ndarray):
-        if self._scope is None:
-            return
-        with tf.variable_scope(self._scope):
-            mask = np.ones([self.output_count], dtype=np.bool_)
-            mask[indices] = 0
-            self._filter_query = tf.transpose(tf.boolean_mask(tf.transpose(self._filter_query), mask))
-            self._bias_query = tf.boolean_mask(self._bias_query, mask)
-            self._scale_query = tf.boolean_mask(self._scale_query, mask)
-            self._ema_mean_query = tf.boolean_mask(self._ema_mean_query, mask)
-            self._ema_variance_query = tf.boolean_mask(self._ema_variance_query, mask)
-        deletion_count = indices.shape[0]
-        self.channels_out -= deletion_count
-        self._notify_output_removal(indices)
+        new_conv._notify_output_addition(session, optimizer, new_conv.output_count)
 
     def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
@@ -813,12 +755,12 @@ class ConvNode(VariableNode):
 
             channels_in = input_tensor.get_shape()[-1]
 
-            filter = tf.get_variable('filter', shape=(1, self.FILTER_WIDTH, channels_in, self.channels_out),
+            filter = tf.get_variable('filter', shape=(1, self.FILTER_WIDTH, channels_in, self._output_count),
                                      dtype=tf.float32, initializer=xavier_initializer())
             tf.add_to_collection(self.WEIGHT_COLLECTION, filter)
-            bias = tf.get_variable('bias', shape=(self.channels_out,), dtype=tf.float32,
+            bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
-            scale = tf.get_variable('scale', shape=(self.channels_out,), dtype=tf.float32,
+            scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
                                     initializer=tf.constant_initializer(1.0))
             output = tf.nn.conv2d(input_tensor, filter, strides=[1, 1, self.stride, 1], padding='SAME')
 
@@ -854,11 +796,6 @@ class ConvNode(VariableNode):
         self._scale_var = scale
         self._ema_mean_var = ema.average(batch_mean)
         self._ema_variance_var = ema.average(batch_variance)
-        self._filter_query = filter
-        self._bias_query = bias
-        self._scale_query = scale
-        self._ema_mean_query = ema.average(batch_mean)
-        self._ema_variance_query = ema.average(batch_variance)
         self.output_tensor = output
         return output
 
@@ -895,9 +832,9 @@ class MutatingCnnModel(Model):
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert isinstance(node, VariableNode) and node.is_built()
+                # The last conv should not be mutated
                 if node != last_node:
-                    # noinspection PyUnresolvedReferences
-                    node.mutate(session, allow_node_creation=self.probabilistic_depth_strategy)
+                    node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
 
         if not self.probabilistic_depth_strategy:
             self._add_node_if_majority_used(session)
@@ -906,15 +843,15 @@ class MutatingCnnModel(Model):
         last_node = self.max_depth_mutatable_conv_node
         if last_node.get_usage(session) > 0.5:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
-            last_node.create_new_node()
+            last_node.create_new_node(session, self.optimizer)
 
-    def _add_node_in_equilibrium(self):
+    def _add_node_in_equilibrium(self, session: tf.Session):
         nodes = self.input_node.all_descendants()
         history = self.output_count_history
         history.append(sum(node.output_count for node in nodes))
         # When the number of outputs didn't change over 3 iterations, create a new node
         if len(set(history)) <= 1:
-            self.max_depth_mutatable_conv_node.create_new_node()
+            self.max_depth_mutatable_conv_node.create_new_node(session, self.optimizer)
 
     # noinspection PyTypeChecker,PyUnresolvedReferences
     @property
@@ -940,18 +877,21 @@ class MutatingCnnModel(Model):
         # noinspection PyTypeChecker
         return loss + reg_penalty
 
+    def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
+        not_saved_uuids = [n.uuid for n in self.input_node.all_descendants() if not n.vars_saved]
+        restore_vars = [var for var in tf.global_variables() if all(uuid not in var.name for uuid in not_saved_uuids)]
+        return restore_vars
+
     def restore(self, session: tf.Session, checkpoint_dir: Path):
         # Init all values first, because not all are saved
         session.run(self.init)
         super().restore(session, checkpoint_dir)
-        with tf.variable_scope(self._nodes_scope):
-            for node in self.input_node.all_descendants():
-                node.restore_variables(session)
 
     def save(self, session: tf.Session, checkpoint_dir: Path):
         super().save(session, checkpoint_dir)
-        for node in self.input_node.all_descendants():
-            node.save_variables(session)
+        built_nodes = (n for n in self.input_node.all_descendants() if n.is_built())
+        for node in built_nodes:
+            node.vars_saved = True
         with (checkpoint_dir / 'nodes.pickle').open('wb') as outfile:
             pickle.dump((self.input_node, self.terminus_node), outfile)
 
@@ -960,11 +900,6 @@ class MutatingCnnModel(Model):
             step = self.global_step.eval(session=session)
             graph = self.input_node.to_graphviz(session, step, Path(tmp_dir))
             graph.render(str(render_dir / 'graph-{}'.format(step)), cleanup=True)
-
-    def _create_saver(self):
-        # Exclude variables of nodes, those are saved separately
-        vars = [var for var in tf.global_variables() if 'nodes/' not in var.name]
-        self.saver = tf.train.Saver(var_list=vars)
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         self.is_training = tf.placeholder(tf.bool, name='is_training')
