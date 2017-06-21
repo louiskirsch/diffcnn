@@ -511,6 +511,10 @@ class VariableNode(Node):
     def penalty(self) -> Union[tf.Tensor, None]:
         return self._penalty
 
+    def get_usage(self, session: tf.Session) -> float:
+        unused = self._below_del_threshold_count.eval(session=session)
+        return 1 - (unused / self.output_count)
+
     def render_penalties(self, session: tf.Session, output_dir: Path, step: int) -> Path:
         if self._scope is None:
             raise AssertionError('Node not created in graph')
@@ -896,12 +900,11 @@ class MutatingCnnModel(Model):
                     node.mutate(session, allow_node_creation=self.probabilistic_depth_strategy)
 
         if not self.probabilistic_depth_strategy:
-            self._add_node_if_all_used(session)
+            self._add_node_if_majority_used(session)
 
-    def _add_node_if_all_used(self, session: tf.Session):
+    def _add_node_if_majority_used(self, session: tf.Session):
         last_node = self.max_depth_mutatable_conv_node
-        penalty = last_node.penalty.eval(session=session)
-        if penalty >= VariableNode.DELETION_THRESHOLD:
+        if last_node.get_usage(session) > 0.5:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.create_new_node()
 
