@@ -354,7 +354,7 @@ class VariableNode(Node):
 
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
-    DELETION_THRESHOLD = 0.05        # Originally 0.05
+    DELETION_THRESHOLD = 0.1        # Originally 0.05
     # TODO how to get rid of this hyperparameter?
     L1_NORM_PENALTY_STRENGTH = 1e-2
 
@@ -671,7 +671,7 @@ class FullyConnectedNode(VariableNode):
 
             if self.can_mutate:
                 squared_scales = tf.square(scale)
-                self._penalty_per_output = squared_scales / (1e-2 + squared_scales)
+                self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
 
             tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
@@ -835,7 +835,7 @@ class ConvNode(VariableNode):
 
             if self.can_mutate:
                 squared_scales = tf.square(scale)
-                self._penalty_per_output = squared_scales / (1e-2 + squared_scales)
+                self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
                 if configuration.linear_depth_penalty:
                     self._penalty *= self.max_depth
