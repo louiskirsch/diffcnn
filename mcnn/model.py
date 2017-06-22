@@ -12,6 +12,7 @@ import itertools
 import numpy as np
 import scipy.misc
 import tensorflow as tf
+import tensorflow.contrib.distributions as tfd
 import pickle
 import logging
 import graphviz
@@ -252,23 +253,22 @@ class Node:
     def is_built(self) -> bool:
         return self.output_tensor is not None
 
-    def reset_recursively(self):
-        self._concat.cache_clear()
-        for node in self.all_descendants():
-            node.reset()
-
-    def build_recursively(self, configuration: NodeBuildConfiguration):
+    def build_descendants(self, configuration: NodeBuildConfiguration):
         if not self.is_buildable() or self.is_built():
             return
         self._build(configuration)
         for child in self.children:
-            child.build_recursively(configuration)
+            assert isinstance(child, Node)
+            child.build_descendants(configuration)
 
     def _build(self, configuration: NodeBuildConfiguration):
         if len(self.parents) == 0:
             self.max_depth = 0
         else:
             self.max_depth = max(p.max_depth for p in self.parents) + 1
+
+    def _post_build(self, post_build_tensors: Dict[str, tf.Tensor]):
+        pass
 
     def _get_input_index(self, parent_node) -> int:
         node_idx = self.parents.index(parent_node)
@@ -334,10 +334,21 @@ class InputNode(Node):
         super().__setstate__(state)
         self._tmp_input = None
 
+    def reset_all(self):
+        self._concat.cache_clear()
+        for node in self.all_descendants():
+            node.reset()
+
+    def post_build_all(self):
+        post_build_tensors = {}
+        for node in self.all_descendants():
+            node._post_build(post_build_tensors)
+
     def build_dag(self, input_tensor: tf.Tensor, configuration: NodeBuildConfiguration):
         self._tmp_input = input_tensor
-        self.reset_recursively()
-        self.build_recursively(configuration)
+        self.reset_all()
+        self.build_descendants(configuration)
+        self.post_build_all()
 
     def _build(self, configuration):
         super()._build(configuration)
@@ -349,10 +360,10 @@ class InputNode(Node):
 class VariableNode(Node):
 
     EMA_COLLECTION = 'EMA_COLLECTION'
+    SCALE_COLLECTION = 'SCALE_COLLECTION'
 
     # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
-    DELETION_THRESHOLD = 0.1        # Originally 0.05
     # TODO how to get rid of this hyperparameter?
     L1_NORM_PENALTY_STRENGTH = 1e-2
 
@@ -641,6 +652,37 @@ class VariableNode(Node):
     def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
         raise NotImplementedError()
 
+    def _post_build(self, post_build_tensors: Dict[str, tf.Tensor]):
+        if 'deletion_threshold' not in post_build_tensors:
+            post_build_tensors['deletion_threshold'] = self._calc_deletion_threshold()
+        deletion_threshold = post_build_tensors['deletion_threshold']
+
+        with tf.variable_scope(self._scope):
+            below_del_threshold = tf.abs(self._scale_var) < deletion_threshold
+            self._below_del_threshold_indices = tf.where(below_del_threshold)
+            self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
+
+    def _calc_deletion_threshold(self, use_const: bool = True) -> tf.Tensor:
+        scales = tf.get_collection(self.SCALE_COLLECTION)
+        abs_scales = tf.abs(tf.concat(scales, axis=0))
+
+        # Tensorflow does not infer shape right when shapes of scales change
+        abs_scales._shape = tf.TensorShape([None])
+
+        tf.summary.histogram('abs_scales', abs_scales)
+
+        if use_const:
+            deletion_threshold = tf.constant(0.2)
+        else:
+            mean, variance = tf.nn.moments(abs_scales, axes=[0], name='scales_moments')
+            std = tf.sqrt(variance, name='scales_std')
+            # Delete all outliers further away than std
+            deletion_threshold = mean - 2 * std
+            
+        assert isinstance(deletion_threshold, tf.Tensor)
+        tf.summary.scalar('deletion_threshold', deletion_threshold)
+        return deletion_threshold
+
     def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
         # noinspection PyTypeChecker
@@ -657,6 +699,8 @@ class VariableNode(Node):
                                    initializer=tf.constant_initializer(0.0))
             scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
                                     initializer=tf.constant_initializer(1.0))
+            tf.add_to_collection(self.SCALE_COLLECTION, scale)
+
             output = self._apply_op(input_tensor, weight)
 
             ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
@@ -669,10 +713,6 @@ class VariableNode(Node):
             output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-8, name='batch_norm')
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
-
-            below_del_threshold = tf.abs(scale) < self.DELETION_THRESHOLD
-            self._below_del_threshold_indices = tf.where(below_del_threshold)
-            self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
             if self.can_mutate:
                 squared_scales = tf.square(scale)
@@ -837,7 +877,7 @@ class MutatingCnnModel(Model):
 
     def build(self):
         if self.input_node is not None:
-            self.input_node.reset_recursively()
+            self.input_node.reset_all()
         super().build()
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
