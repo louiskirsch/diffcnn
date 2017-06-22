@@ -925,7 +925,7 @@ class MutatingCnnModel(Model):
     def _track_scales_diff(self):
         self.previous_scales = tf.Variable(tf.zeros_like(self.scales), trainable=False,
                                            collections=[self.VOLATILE_VARIABLES], name='previous_scales')
-        self.scales_diff = tf.abs(self.scales - self.previous_scales)
+        self.scales_diff = self.scales - self.previous_scales
         tf.summary.histogram('scales_diff', self.scales_diff)
         with tf.control_dependencies([self.scales_diff]):
             self.memorize_previous_scales = tf.assign(self.previous_scales, self.scales)
