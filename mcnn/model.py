@@ -21,7 +21,7 @@ from tensorflow.contrib.layers import xavier_initializer
 
 class Model:
 
-    EMA_COLLECTION = 'EMA_COLLECTION'
+    POST_TRAINING_UPDATE_COLLECTION = 'POST_TRAINING_UPDATE_COLLECTION'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
         self.batch_size = batch_size
@@ -60,7 +60,7 @@ class Model:
 
     def _with_post_training_update(self, op: tf.Operation) -> tf.Operation:
         with tf.control_dependencies([op]):
-            return tf.group(*tf.get_collection(self.EMA_COLLECTION))
+            return tf.group(*tf.get_collection(self.POST_TRAINING_UPDATE_COLLECTION))
 
     def _define_training(self):
         cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
@@ -714,7 +714,7 @@ class VariableNode(Node):
             ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
             batch_mean, batch_variance = tf.nn.moments(output, axes=list(range(len(weight_shape) - 1)), name='moments')
             update_ema = ema.apply([batch_mean, batch_variance])
-            tf.add_to_collection(Model.EMA_COLLECTION, update_ema)
+            tf.add_to_collection(Model.POST_TRAINING_UPDATE_COLLECTION, update_ema)
             mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
             variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
 
@@ -826,6 +826,8 @@ class ConvNode(VariableNode):
 
 class MutatingCnnModel(Model):
 
+    VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
+
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
                  checkpoint_dir: Path, probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True):
 
@@ -888,7 +890,7 @@ class MutatingCnnModel(Model):
         if self.input_node is not None:
             self.input_node.reset_all()
         super().build()
-        self.init = tf.group(self.init, tf.variables_initializer([self.previous_scales]))
+        self.init = tf.group(self.init, tf.variables_initializer(tf.get_collection(self.VOLATILE_VARIABLES)))
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         loss = super()._define_loss(cross_entropy)
@@ -900,10 +902,6 @@ class MutatingCnnModel(Model):
         tf.summary.scalar('l1_penalty', reg_penalty)
         # noinspection PyTypeChecker
         return loss + reg_penalty
-
-    def _with_post_training_update(self, op: tf.Operation) -> tf.Operation:
-        with tf.control_dependencies([op]), tf.control_dependencies([self.scales_diff]):
-                return tf.group(*tf.get_collection(self.EMA_COLLECTION), self.memorize_previous_scales)
 
     def _define_training(self):
         scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
@@ -925,11 +923,13 @@ class MutatingCnnModel(Model):
         tf.summary.histogram('scale_gradients', scale_gradients)
 
     def _track_scales_diff(self):
-        self.previous_scales = tf.Variable(tf.zeros_like(self.scales), trainable=False, collections=[],
-                                           name='previous_scales')
+        self.previous_scales = tf.Variable(tf.zeros_like(self.scales), trainable=False,
+                                           collections=[self.VOLATILE_VARIABLES], name='previous_scales')
         self.scales_diff = tf.abs(self.scales - self.previous_scales)
         tf.summary.histogram('scales_diff', self.scales_diff)
-        self.memorize_previous_scales = tf.assign(self.previous_scales, self.scales)
+        with tf.control_dependencies([self.scales_diff]):
+            self.memorize_previous_scales = tf.assign(self.previous_scales, self.scales)
+        tf.add_to_collection(self.POST_TRAINING_UPDATE_COLLECTION, self.memorize_previous_scales)
 
     def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
         not_saved_uuids = [n.uuid for n in self.input_node.all_descendants() if not n.vars_saved]
