@@ -114,32 +114,30 @@ class Model:
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
              update_summary=False):
         output_feed = [self.global_step]
-
         if loss:
             output_feed.append(self.loss)
-
         if train:
             output_feed.append(self.train_op)
-
         if logits:
             output_feed.append(self.logits)
-
         if correct_count:
             output_feed.append(self.correct_count)
-
         if update_summary:
             output_feed.append(self.summary)
 
         results = session.run(output_feed, feed_dict=feed_dict)
 
         if update_summary:
-            summary_result = results[-1]
-            step = results[0]
-            self.summary_writer.add_summary(summary_result, global_step=step)
-            self.summary_writer.add_graph(session.graph, global_step=step)
-            return results[:-1]
+            return self._extract_summary(results, session)
 
         return results
+
+    def _extract_summary(self, results: List, session: tf.Session) -> List:
+        summary_result = results[-1]
+        step = results[0]
+        self.summary_writer.add_summary(summary_result, global_step=step)
+        self.summary_writer.add_graph(session.graph, global_step=step)
+        return results[:-1]
 
     @classmethod
     def _full_fullyconnected(cls, input: tf.Tensor, input_size: int, layer_size: int, activation=None) -> tf.Tensor:
@@ -900,9 +898,15 @@ class MutatingCnnModel(Model):
 
     def _define_training(self):
         super()._define_training()
+
         scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
         scale_gradients = tf.concat(tf.gradients(self.loss, scales), axis=0)
         tf.summary.histogram('scale_gradients', scale_gradients)
+
+        train_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
+                                           var_list=scales, name='train_scales_op')
+        with tf.control_dependencies([train_op]):
+            self.train_scales_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
 
     def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
         not_saved_uuids = [n.uuid for n in self.input_node.all_descendants() if not n.vars_saved]
@@ -955,9 +959,29 @@ class MutatingCnnModel(Model):
         return logits
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             update_summary=False):
+             update_summary=False, train_switches=False):
         feed_dict[self.is_training] = train
-        return super().step(session, feed_dict, loss, train, logits, correct_count, update_summary)
+        output_feed = [self.global_step]
+
+        if loss:
+            output_feed.append(self.loss)
+        if train_switches:
+            output_feed.append(self.train_scales_op)
+        elif train:  # We either train switches or everything
+            output_feed.append(self.train_op)
+        if logits:
+            output_feed.append(self.logits)
+        if correct_count:
+            output_feed.append(self.correct_count)
+        if update_summary:
+            output_feed.append(self.summary)
+
+        results = session.run(output_feed, feed_dict=feed_dict)
+
+        if update_summary:
+            return self._extract_summary(results, session)
+
+        return results
 
 
 class McnnModel(Model):
