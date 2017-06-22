@@ -21,6 +21,8 @@ from tensorflow.contrib.layers import xavier_initializer
 
 class Model:
 
+    EMA_COLLECTION = 'EMA_COLLECTION'
+
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
         self.batch_size = batch_size
         self.sample_length = sample_length
@@ -56,6 +58,10 @@ class Model:
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
 
+    def _with_post_training_update(self, op: tf.Operation) -> tf.Operation:
+        with tf.control_dependencies([op]):
+            return tf.group(*tf.get_collection(self.EMA_COLLECTION))
+
     def _define_training(self):
         cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
                                                                        name='crossentropy')
@@ -63,8 +69,7 @@ class Model:
         tf.summary.scalar('loss', self.loss)
         self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
         train_op = self.optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
-        with tf.control_dependencies([train_op]):
-            self.train_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
+        self.train_op = self._with_post_training_update(train_op)
 
     def _define_evaluation(self):
         correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
@@ -363,7 +368,6 @@ class InputNode(Node):
 
 class VariableNode(Node):
 
-    EMA_COLLECTION = 'EMA_COLLECTION'
     SCALE_COLLECTION = 'SCALE_COLLECTION'
 
     # Parameters from 2016 Miconi
@@ -710,7 +714,7 @@ class VariableNode(Node):
             ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
             batch_mean, batch_variance = tf.nn.moments(output, axes=list(range(len(weight_shape) - 1)), name='moments')
             update_ema = ema.apply([batch_mean, batch_variance])
-            tf.add_to_collection(self.EMA_COLLECTION, update_ema)
+            tf.add_to_collection(Model.EMA_COLLECTION, update_ema)
             mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
             variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
 
@@ -719,6 +723,7 @@ class VariableNode(Node):
                 output = tf.nn.relu(output, name='activation')
 
             if self.can_mutate:
+                # Calculate Weigend et al. 1990 regularizer
                 squared_scales = tf.square(scale)
                 self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
@@ -883,11 +888,11 @@ class MutatingCnnModel(Model):
         if self.input_node is not None:
             self.input_node.reset_all()
         super().build()
+        self.init = tf.group(self.init, tf.variables_initializer([self.previous_scales]))
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         loss = super()._define_loss(cross_entropy)
         tf.summary.scalar('cross_entropy', loss)
-        # Calculate Weigend et al. 1990 regularizer on outgoing weights
         nodes = self.input_node.all_descendants()
         penalties = [node.penalty for node in nodes if node.penalty is not None]
         penalty_sum = tf.add_n(penalties, name='penalty_sum')
@@ -896,17 +901,35 @@ class MutatingCnnModel(Model):
         # noinspection PyTypeChecker
         return loss + reg_penalty
 
+    def _with_post_training_update(self, op: tf.Operation) -> tf.Operation:
+        with tf.control_dependencies([op]), tf.control_dependencies([self.scales_diff]):
+                return tf.group(*tf.get_collection(self.EMA_COLLECTION), self.memorize_previous_scales)
+
     def _define_training(self):
+        scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
+        self.scales = tf.concat(scales, axis=0)
+        self._track_scales_diff()
+
         super()._define_training()
 
-        scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
+        self._track_scales_gradient(scales)
+        self._define_scales_training(scales)
+
+    def _define_scales_training(self, scales: List[tf.Variable]):
+        train_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
+                                           var_list=scales, name='train_scales_op')
+        self.train_scales_op = self._with_post_training_update(train_op)
+
+    def _track_scales_gradient(self, scales: List[tf.Variable]):
         scale_gradients = tf.concat(tf.gradients(self.loss, scales), axis=0)
         tf.summary.histogram('scale_gradients', scale_gradients)
 
-        train_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
-                                           var_list=scales, name='train_scales_op')
-        with tf.control_dependencies([train_op]):
-            self.train_scales_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
+    def _track_scales_diff(self):
+        self.previous_scales = tf.Variable(tf.zeros_like(self.scales), trainable=False, collections=[],
+                                           name='previous_scales')
+        self.scales_diff = tf.abs(self.scales - self.previous_scales)
+        tf.summary.histogram('scales_diff', self.scales_diff)
+        self.memorize_previous_scales = tf.assign(self.previous_scales, self.scales)
 
     def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
         not_saved_uuids = [n.uuid for n in self.input_node.all_descendants() if not n.vars_saved]
