@@ -672,13 +672,13 @@ class VariableNode(Node):
         tf.summary.histogram('abs_scales', abs_scales)
 
         if use_const:
-            deletion_threshold = tf.constant(0.2)
+            deletion_threshold = tf.constant(0.1)
         else:
             mean, variance = tf.nn.moments(abs_scales, axes=[0], name='scales_moments')
             std = tf.sqrt(variance, name='scales_std')
             # Delete all outliers further away than std
             deletion_threshold = mean - 2 * std
-            
+
         assert isinstance(deletion_threshold, tf.Tensor)
         tf.summary.scalar('deletion_threshold', deletion_threshold)
         return deletion_threshold
