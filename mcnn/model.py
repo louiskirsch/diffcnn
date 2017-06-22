@@ -47,26 +47,32 @@ class Model:
         self.logits = self._create_network(input_2d)
 
         with tf.variable_scope('training'):
-            cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
-                                                                           name='crossentropy')
-            self.loss = self._define_loss(cross_entropy)
-            tf.summary.scalar('loss', self.loss)
-            self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
-            train_op = self.optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
-            with tf.control_dependencies([train_op]):
-                self.train_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
+            self._define_training()
 
         with tf.variable_scope('evaluation'):
-            correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
-            self.correct_count = tf.reduce_sum(tf.cast(correct, tf.int32), name='correct_count')
-            self.accuracy = self.correct_count / self.dynamic_batch_size
-            self.testing_error = 1 - self.accuracy
-            tf.summary.scalar('accuracy', self.accuracy)
-            tf.summary.scalar('testing_error', self.testing_error)
+            self._define_evaluation()
 
         self.init = tf.global_variables_initializer()
         self.summary = tf.summary.merge_all()
         self.summary_writer = None
+
+    def _define_training(self):
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
+                                                                       name='crossentropy')
+        self.loss = self._define_loss(cross_entropy)
+        tf.summary.scalar('loss', self.loss)
+        self.optimizer = tf.train.AdamOptimizer(self.learning_rate)
+        train_op = self.optimizer.minimize(self.loss, global_step=self.global_step, name='train_op')
+        with tf.control_dependencies([train_op]):
+            self.train_op = tf.group(*tf.get_collection(VariableNode.EMA_COLLECTION))
+
+    def _define_evaluation(self):
+        correct = tf.nn.in_top_k(self.logits, self.labels, 1, name='correct')
+        self.correct_count = tf.reduce_sum(tf.cast(correct, tf.int32), name='correct_count')
+        self.accuracy = self.correct_count / self.dynamic_batch_size
+        self.testing_error = 1 - self.accuracy
+        tf.summary.scalar('accuracy', self.accuracy)
+        tf.summary.scalar('testing_error', self.testing_error)
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
         return tf.reduce_mean(cross_entropy, name='crossentropy_mean')
@@ -664,7 +670,7 @@ class VariableNode(Node):
 
     def _calc_deletion_threshold(self, use_const: bool = True) -> tf.Tensor:
         scales = tf.get_collection(self.SCALE_COLLECTION)
-        abs_scales = tf.abs(tf.concat(scales, axis=0))
+        abs_scales = tf.abs(tf.concat(scales, axis=0), 'abs_scales')
 
         # Tensorflow does not infer shape right when shapes of scales change
         abs_scales._shape = tf.TensorShape([None])
@@ -891,6 +897,12 @@ class MutatingCnnModel(Model):
         tf.summary.scalar('l1_penalty', reg_penalty)
         # noinspection PyTypeChecker
         return loss + reg_penalty
+
+    def _define_training(self):
+        super()._define_training()
+        scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
+        scale_gradients = tf.concat(tf.gradients(self.loss, scales), axis=0)
+        tf.summary.histogram('scale_gradients', scale_gradients)
 
     def _vars_to_restore(self) -> Union[None, List[tf.Variable]]:
         not_saved_uuids = [n.uuid for n in self.input_node.all_descendants() if not n.vars_saved]
