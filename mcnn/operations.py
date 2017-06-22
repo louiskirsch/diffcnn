@@ -152,7 +152,7 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
 
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
-                     should_render_graph: bool):
+                     should_render_graph: bool, post_train_only_switches: bool = False):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -184,11 +184,14 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.input: input,
                     model.labels: labels
                 }
+                train_only_switches = post_train_only_switches and step >= iterate_step_count // 2
                 if step < iterate_step_count - 1:
-                    model.step(session, feed_dict, train=True)
+                    model.step(session, feed_dict, train=True, update_summary=True,
+                               train_switches=train_only_switches)
                 else:
                     global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
-                                                                     correct_count=True, update_summary=True)
+                                                                     correct_count=True, update_summary=True,
+                                                                     train_switches=train_only_switches)
                     accuracy = correct_count / model.batch_size
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
 
