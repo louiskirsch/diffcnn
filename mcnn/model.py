@@ -683,9 +683,6 @@ class VariableNode(Node):
                 elif configuration.exponential_depth_penalty:
                     self._penalty *= 2 ** self.max_depth
 
-            tf.summary.scalar('below_del_threshold_count', self._below_del_threshold_count)
-            tf.summary.scalar('output_count', self.output_count)
-
         self._filter_var = weight
         self._bias_var = bias
         self._scale_var = scale
