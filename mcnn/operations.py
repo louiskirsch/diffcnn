@@ -151,7 +151,7 @@ def _define_custom_image_summary(name: str) -> Tuple[tf.Tensor, tf.Tensor]:
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
                      checkpoint_written_callback: Callable, render_graph_steps: int,
-                     train_only_switches_fraction: float, summary_every_step: bool):
+                     train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -165,12 +165,14 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
     steps_left = step_count
 
     while steps_left > 0:
+        iterate_step_count = min(steps_left, steps_per_checkpoint)
+        steps_left -= iterate_step_count
         is_initial_iteration = steps_left == step_count
+
         with create_session() as session:
             used_checkpoint_dir = checkpoint_dir if is_initial_iteration else checkpoint_dir_mutated
             model.restore_or_create(session, used_checkpoint_dir)
             model.setup_summary_writer(session, log_dir)
-            iterate_step_count = min(steps_left, steps_per_checkpoint)
 
             graph_file = plot_dir / 'graph.png'
             graph_rendering_placeholder, graph_rendering_summary = _define_custom_image_summary('graph_rendering')
@@ -199,8 +201,12 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                         # noinspection PyCallingNonCallable
                         checkpoint_written_callback()
 
-                    model.mutate(session)
+                    architecture_frozen_previously = model.architecture_frozen
+                    model.mutate(session, freeze_on_delete)
                     logging.info('Model mutated')
+                    if model.architecture_frozen and not architecture_frozen_previously:
+                        # Stop training soon
+                        steps_left = 2 * steps_per_checkpoint
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
@@ -211,5 +217,4 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
 
         model.build()
         logging.info('Model rebuilt')
-        steps_left -= iterate_step_count
 

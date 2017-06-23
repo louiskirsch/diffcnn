@@ -93,7 +93,8 @@ def train(options):
                                 checkpoint_written_callback=evaluate_process,
                                 render_graph_steps=options.render_graph_steps,
                                 train_only_switches_fraction=options.train_only_switches_fraction,
-                                summary_every_step=options.summary_every_step)
+                                summary_every_step=options.summary_every_step,
+                                freeze_on_delete=options.freeze_on_delete)
 
     if options.write_result_file is not None:
         accuracy = _evaluate_with_result(options)

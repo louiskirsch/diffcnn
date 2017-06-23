@@ -64,6 +64,8 @@ class CLI:
                                      help='Render the graph to pdf every n steps specified. Set to 0 to disable.')
         training_parser.add_argument('--summary-every-step', dest='summary_every_step', action='store_true',
                                      help='Log a tensorflow summary every training step.')
+        training_parser.add_argument('--freeze-on-delete', dest='freeze_on_delete', action='store_true',
+                                     help='Whether to freeze the architecture on node deletion.')
         self._extend_training_and_eval_options(training_parser)
 
     @staticmethod
@@ -94,7 +96,8 @@ class CLI:
                 ('lr', parsed.learning_rate),
                 ('del-thres', parsed.neuron_deletion_threshold),
                 ('penalty-fnc', parsed.penalty_fnc),
-                ('switches-frac', parsed.train_only_switches_fraction)
+                ('switches-frac', parsed.train_only_switches_fraction),
+                ('freeze-on-delete', parsed.freeze_on_delete)
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

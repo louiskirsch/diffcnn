@@ -872,10 +872,13 @@ class MutatingCnnModel(Model):
         self.probabilistic_depth_strategy = probabilistic_depth_strategy
         self.output_count_history = deque(maxlen=3)
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
+        self.architecture_frozen = False
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
-    def mutate(self, session: tf.Session):
+    def mutate(self, session: tf.Session, freeze_on_delete: bool):
+        if self.architecture_frozen:
+            return
         nodes = self.input_node.all_descendants()
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         last_node = self.max_depth_mutatable_conv_node
@@ -885,6 +888,12 @@ class MutatingCnnModel(Model):
                 # The last conv should not be mutated
                 if node != last_node:
                     node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
+
+        if freeze_on_delete:
+            nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0
+            if nodes_got_deleted:
+                self.architecture_frozen = True
+                return
 
         if not self.probabilistic_depth_strategy:
             self._add_node_if_majority_used(session)
