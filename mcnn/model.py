@@ -177,11 +177,11 @@ class McnnConfiguration:
 
 class NodeBuildConfiguration:
 
-    def __init__(self, is_training: tf.Tensor, exponential_depth_penalty: bool = False,
-                 linear_depth_penalty: bool = True):
+    def __init__(self, is_training: tf.Tensor):
         self.is_training = is_training
-        self.exponential_depth_penalty = exponential_depth_penalty
-        self.linear_depth_penalty = linear_depth_penalty
+        self.exponential_depth_penalty = False
+        self.linear_depth_penalty = False
+        self.penalty_type = 'WEIGEND'
 
 
 class Node:
@@ -724,8 +724,13 @@ class VariableNode(Node):
 
             if self.can_mutate:
                 # Calculate Weigend et al. 1990 regularizer
-                squared_scales = tf.square(scale)
-                self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
+                if configuration.penalty_type == 'WEIGEND':
+                    squared_scales = tf.square(scale)
+                    self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
+                elif configuration.penalty_type == 'LINEAR':
+                    self._penalty_per_output = tf.abs(scale)
+                else:
+                    raise ValueError('Unknown penalty type {}'.format(configuration.penalty_type))
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
                 if configuration.linear_depth_penalty:
                     self._penalty *= self.max_depth
@@ -960,7 +965,8 @@ class MutatingCnnModel(Model):
 
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
-            config = NodeBuildConfiguration(self.is_training, linear_depth_penalty=False)
+            config = NodeBuildConfiguration(self.is_training)
+            config.penalty_type = 'LINEAR'
             self.input_node.build_dag(input_2d, config)
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
