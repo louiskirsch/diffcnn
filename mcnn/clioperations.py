@@ -87,6 +87,7 @@ def train(options):
                                 step_count=options.step_count,
                                 checkpoint_dir=options.checkpoint_dir,
                                 log_dir=options.log_dir_train,
+                                plot_dir=options.plot_dir,
                                 steps_per_checkpoint=options.steps_per_checkpoint,
                                 feature_name='',
                                 checkpoint_written_callback=evaluate_process,

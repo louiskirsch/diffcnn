@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Tuple
 
 import tensorflow as tf
 import numpy as np
@@ -141,9 +141,17 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                 model.step(session, feed_dict, train=True)
 
 
+def _define_custom_image_summary(name: str) -> Tuple[tf.Tensor, tf.Tensor]:
+    img_placeholder = tf.placeholder(dtype=tf.string, name=name + '_placeholder')
+    image = tf.image.decode_png(img_placeholder, channels=4)
+    image = tf.expand_dims(image, 0)
+    return img_placeholder, tf.summary.image(name, image)
+
+
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-                     steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
-                     render_graph_steps: int, train_only_switches_fraction: float, summary_every_step: bool):
+                     plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
+                     checkpoint_written_callback: Callable, render_graph_steps: int,
+                     train_only_switches_fraction: float, summary_every_step: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -164,6 +172,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
             model.setup_summary_writer(session, log_dir)
             iterate_step_count = min(steps_left, steps_per_checkpoint)
 
+            graph_file = plot_dir / 'graph.png'
+            graph_rendering_placeholder, graph_rendering_summary = _define_custom_image_summary('graph_rendering')
+
             logging.info('Started training')
             for step in range(iterate_step_count):
                 input, labels = next(train_sample_iterator)
@@ -173,8 +184,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                 }
                 train_only_switches = float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
                 if step < iterate_step_count - 1:
-                    model.step(session, feed_dict, train=True, update_summary=summary_every_step,
-                               train_switches=train_only_switches)
+                    global_step, _ = model.step(session, feed_dict, train=True, update_summary=summary_every_step,
+                                                train_switches=train_only_switches)
                 else:
                     global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
                                                                      correct_count=True, update_summary=True,
@@ -193,7 +204,10 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
-                    model.render_graph(session, checkpoint_dir / 'graph_renderings')
+                    model.render_graph(session, render_file=graph_file)
+                    summary_buf = graph_rendering_summary.eval({graph_rendering_placeholder: graph_file.read_bytes()},
+                                                               session=session)
+                    model.summary_writer.add_summary(summary_buf, global_step)
 
         model.build()
         logging.info('Model rebuilt')

@@ -485,7 +485,7 @@ class VariableNode(Node):
         unused = self._below_del_threshold_count.eval(session=session)
         return 1 - (unused / self.output_count)
 
-    def render_penalties(self, session: tf.Session, output_dir: Path, step: int) -> Path:
+    def render_penalties(self, session: tf.Session, output_dir: Path, step: int, minimum_width: int = 200) -> Path:
         if self._scope is None:
             raise AssertionError('Node not created in graph')
         penalties = self._penalty_per_output.eval(session=session)
@@ -496,6 +496,10 @@ class VariableNode(Node):
         img = np.broadcast_to(img, (3, img_height, img_width))
         img = np.transpose(img, axes=(1, 2, 0)) * 255
         img = img.astype(np.uint8)
+
+        if img_width < minimum_width:
+            scale = minimum_width / img_width
+            img = scipy.misc.imresize(img, scale, interp='nearest')
 
         filename = 'penalties_{}_{}.png'.format(self.uuid, step)
         file = output_dir / filename
@@ -508,7 +512,7 @@ class VariableNode(Node):
         try:
             img_path = self.render_penalties(session, tmp_directory, step)
             node_name = self.uuid + '_penalties'
-            graph.node(node_name, label='', image=str(img_path), imagescale='true', shape='box')
+            graph.node(node_name, label='', image=str(img_path), imagescale='false', shape='box')
             graph.edge(self.uuid, node_name, arrowhead='none')
         except AssertionError:
             pass
@@ -968,11 +972,19 @@ class MutatingCnnModel(Model):
         with (checkpoint_dir / 'nodes.pickle').open('wb') as outfile:
             pickle.dump((self.input_node, self.terminus_node), outfile)
 
-    def render_graph(self, session: tf.Session, render_dir: Path):
+    def render_graph(self, session: tf.Session, render_dir: Path = None,
+                     render_file: Path = None, render_format: str = 'png'):
+        if render_dir is None and render_file is None:
+            raise ValueError('Must specify either a render directory or render filepath.')
         with tempfile.TemporaryDirectory() as tmp_dir:
             step = self.global_step.eval(session=session)
             graph = self.input_node.to_graphviz(session, step, Path(tmp_dir))
-            graph.render(str(render_dir / 'graph-{}'.format(step)), cleanup=True)
+            graph.format = render_format
+            if render_file is None:
+                render_file = render_dir / 'graph-{}'.format(step)
+            else:
+                render_file = render_file.with_name(render_file.stem)
+            graph.render(str(render_file), cleanup=True)
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         self.is_training = tf.placeholder(tf.bool, name='is_training')
