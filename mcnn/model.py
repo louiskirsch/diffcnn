@@ -969,7 +969,7 @@ class MutatingCnnModel(Model):
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
             config = NodeBuildConfiguration(self.is_training)
-            config.penalty_type = 'LINEAR'
+            config.penalty_type = 'WEIGEND'
             self.input_node.build_dag(input_2d, config)
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
