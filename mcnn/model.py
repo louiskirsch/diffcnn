@@ -737,6 +737,9 @@ class VariableNode(Node):
                 elif configuration.exponential_depth_penalty:
                     self._penalty *= 2 ** self.max_depth
 
+            tf.summary.scalar('depth', self.max_depth)
+            tf.summary.histogram('abs_scale', tf.abs(scale))
+
         self._filter_var = weight
         self._bias_var = bias
         self._scale_var = scale
