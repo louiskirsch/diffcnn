@@ -879,15 +879,16 @@ class MutatingCnnModel(Model):
     def mutate(self, session: tf.Session, freeze_on_delete: bool):
         if self.architecture_frozen:
             return
+
         nodes = self.input_node.all_descendants()
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         last_node = self.max_depth_mutatable_conv_node
+        last_node_majority_used = last_node.get_usage(session) > 0.5
+
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert isinstance(node, VariableNode) and node.is_built()
-                # The last conv should not be mutated
-                if node != last_node:
-                    node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
+                node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
 
         if freeze_on_delete:
             nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0
@@ -895,12 +896,7 @@ class MutatingCnnModel(Model):
                 self.architecture_frozen = True
                 return
 
-        if not self.probabilistic_depth_strategy:
-            self._add_node_if_majority_used(session)
-
-    def _add_node_if_majority_used(self, session: tf.Session):
-        last_node = self.max_depth_mutatable_conv_node
-        if last_node.get_usage(session) > 0.5:
+        if last_node_majority_used:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.create_new_node(session, self.optimizer)
 
