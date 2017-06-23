@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+
+import argparse
+
+import logging
+from pathlib import Path
+
+from lazy import lazy
+
+
+class CLI:
+
+    def __init__(self):
+        self.parser = argparse.ArgumentParser()
+        self.subparsers = self.parser.add_subparsers(help='sub-command help', dest='command')
+        self.base_parser = self._create_base_parser()
+        self._add_training_parser()
+        self._add_evaluation_parser()
+        self._add_lrp_parser()
+
+    def _create_base_parser(self):
+        base_parser = argparse.ArgumentParser(add_help=False)
+        base_parser.add_argument('--batch-size', dest='batch_size', type=int, default=64,
+                                 help='Batch size to use.')
+        base_parser.add_argument('--dataset', dest='dataset_name', type=str, default='Adiac',
+                                 help='Name of dataset to use')
+        base_parser.add_argument('--run-name', dest='run_name', type=str, default=None,
+                                 help='Give this training a name to appear in tensorboard.')
+        base_parser.add_argument('--run-name-suffix', dest='run_name_suffix', type=str, default=None,
+                                 help='Use this string as a suffix behind the auto-generated run name.')
+        base_parser.add_argument('--data-dir', dest='data_dir', type=str, default='data',
+                                 help='Data directory.')
+        base_parser.add_argument('--ucr', dest='use_ucr', type=bool, default=True,
+                                 help='Whether to use UCR time series data.')
+        base_parser.add_argument('--checkpoint-dir', dest='checkpoint_dir', type=str, default='checkpoints',
+                                 help='Checkpoint directory to store the runs in.')
+        base_parser.add_argument('--log-dir', dest='log_dir', type=str, default='logs',
+                                 help='Log directory to log the runs in.')
+        base_parser.add_argument('--plot-dir', dest='plot_dir', type=str, default='plots',
+                                 help='Directory to store additional plots in.')
+        base_parser.add_argument('--global-avg-pool', dest='global_avg_pool', type=bool, default=True,
+                                 help='Use global average pooling instead of fully connected layers.')
+        base_parser.add_argument('--depth-penalty', dest='depth_penalty', choices=['exponential', 'linear', 'none'],
+                                 default='none', help='The depth penalty to apply.')
+        base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
+                                 default='weigend', help='The penalty function to apply.')
+        base_parser.add_argument('--neuron-del-thres', dest='neuron_deletion_threshold', type=float, default=0.05,
+                                 help='The switch-threshold below which output neurons are deleted.')
+        base_parser.add_argument('--learning-rate', dest='learning_rate', type=float, default=1e-3,
+                                 help='The initial learning rate.')
+        base_parser.add_argument('--only-switches', dest='train_only_switches_fraction', type=float, default=0,
+                                 help='The fraction of training between mutations to be used only for training'
+                                      'switches.')
+        return base_parser
+
+    def _add_training_parser(self):
+        training_parser = self.subparsers.add_parser('train', help='Train the mutating network.',
+                                                     parents=[self.base_parser])
+        training_parser.add_argument('--steps', dest='step_count', type=int, default=50000,
+                                     help='Number of steps to train.')
+        training_parser.add_argument('--steps-per-checkpoint', dest='steps_per_checkpoint', type=int, default=1000,
+                                     help='How many training steps to do per checkpoint.')
+        training_parser.add_argument('--render-graph', dest='render_graph_steps', type=int, default=100,
+                                     help='Render the graph to pdf every n steps specified. Set to 0 to disable.')
+        training_parser.add_argument('--summary-every-step', dest='summary_every_step', action='store_true',
+                                     help='Log a tensorflow summary every training step.')
+
+    def _add_lrp_parser(self):
+        lrp_parser = self.subparsers.add_parser('lrp', help='Visualize samples using layerwise relevance propagation.',
+                                                     parents=[self.base_parser])
+
+    def _add_evaluation_parser(self):
+        evaluation_parser = self.subparsers.add_parser('evaluate', help='Evaluate the development or test set.',
+                                                       parents=[self.base_parser])
+
+    @lazy
+    def parsed(self):
+        parsed = self.parser.parse_args()
+
+        if not parsed.command:
+            return parsed
+
+        if parsed.run_name is None:
+            params = [
+                ('depth-penalty', parsed.depth_penalty),
+                ('gavg-pool', parsed.global_avg_pool),
+                ('lr', parsed.learning_rate),
+                ('del-thres', parsed.neuron_deletion_threshold),
+                ('penalty-fnc', parsed.penalty_fnc),
+                ('switches-frac', parsed.train_only_switches_fraction)
+            ]
+            params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
+            parsed.run_name = params_str
+            if parsed.run_name_suffix is not None:
+                parsed.run_name += '_' + parsed.run_name_suffix
+
+        parsed.run_name = parsed.dataset_name + '_' + parsed.run_name
+
+        parsed.data_dir = Path(parsed.data_dir)
+        parsed.checkpoint_dir = Path(parsed.checkpoint_dir)
+        parsed.log_dir = Path(parsed.log_dir)
+        parsed.plot_dir = Path(parsed.plot_dir)
+
+        if parsed.use_ucr:
+            parsed.data_dir /= 'UCR_TS_Archive_2015'
+            parsed.dataset_train = parsed.data_dir / parsed.dataset_name / (parsed.dataset_name + '_TRAIN')
+            parsed.dataset_test = parsed.data_dir / parsed.dataset_name / (parsed.dataset_name + '_TEST')
+
+        parsed.checkpoint_dir /= parsed.run_name
+        parsed.plot_dir /= parsed.run_name
+        parsed.log_dir_train = parsed.log_dir / (parsed.run_name + '_train')
+        parsed.log_dir_test = parsed.log_dir / (parsed.run_name + '_test')
+
+        return parsed
+
+    @lazy
+    def command_executor(self):
+        import mcnn.clioperations as ops
+        return {
+            'train': ops.train,
+            'evaluate': ops.evaluate,
+            'lrp': ops.visualize
+        }[self.parsed.command]
+
+    def run(self):
+        if not self.parsed.command:
+            self.parser.print_help()
+        else:
+            logging.basicConfig(level=logging.INFO)
+            self._ensure_directories()
+            self.command_executor(self.parsed)
+
+    def _ensure_directories(self):
+        directories = [
+            self.parsed.checkpoint_dir,
+            self.parsed.log_dir_train,
+            self.parsed.log_dir_test,
+            self.parsed.plot_dir
+        ]
+        for directory in directories:
+            if not directory.exists():
+                directory.mkdir(parents=True)
+
+
+if __name__ == "__main__":
+    cli = CLI()
+    cli.run()

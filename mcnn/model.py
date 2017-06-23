@@ -177,11 +177,18 @@ class McnnConfiguration:
 
 class NodeBuildConfiguration:
 
-    def __init__(self, is_training: tf.Tensor):
-        self.is_training = is_training
-        self.exponential_depth_penalty = False
-        self.linear_depth_penalty = False
-        self.penalty_type = 'WEIGEND'
+    def __init__(self):
+        self.is_training = None
+        self.depth_penalty = 'none'
+        self.penalty_type = 'weigend'
+        self.const_neuron_deletion_threshold = 0.0
+
+    @classmethod
+    def from_options(cls, options):
+        config = NodeBuildConfiguration()
+        config.depth_penalty = options.depth_penalty
+        config.penalty_type = options.penalty_fnc
+        config.const_neuron_deletion_threshold = options.neuron_deletion_threshold
 
 
 class Node:
@@ -276,7 +283,7 @@ class Node:
         else:
             self.max_depth = max(p.max_depth for p in self.parents) + 1
 
-    def _post_build(self, post_build_tensors: Dict[str, tf.Tensor]):
+    def _post_build(self, configuration: NodeBuildConfiguration, post_build_tensors: Dict[str, tf.Tensor]):
         pass
 
     def _get_input_index(self, parent_node) -> int:
@@ -348,16 +355,16 @@ class InputNode(Node):
         for node in self.all_descendants():
             node.reset()
 
-    def post_build_all(self):
+    def post_build_all(self, configuration: NodeBuildConfiguration):
         post_build_tensors = {}
         for node in self.all_descendants():
-            node._post_build(post_build_tensors)
+            node._post_build(configuration, post_build_tensors)
 
     def build_dag(self, input_tensor: tf.Tensor, configuration: NodeBuildConfiguration):
         self._tmp_input = input_tensor
         self.reset_all()
         self.build_descendants(configuration)
-        self.post_build_all()
+        self.post_build_all(configuration)
 
     def _build(self, configuration):
         super()._build(configuration)
@@ -660,9 +667,9 @@ class VariableNode(Node):
     def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
         raise NotImplementedError()
 
-    def _post_build(self, post_build_tensors: Dict[str, tf.Tensor]):
+    def _post_build(self, configuration: NodeBuildConfiguration, post_build_tensors: Dict[str, tf.Tensor]):
         if 'deletion_threshold' not in post_build_tensors:
-            post_build_tensors['deletion_threshold'] = self._calc_deletion_threshold()
+            post_build_tensors['deletion_threshold'] = self._calc_deletion_threshold(configuration)
         deletion_threshold = post_build_tensors['deletion_threshold']
 
         with tf.variable_scope(self._scope):
@@ -670,7 +677,7 @@ class VariableNode(Node):
             self._below_del_threshold_indices = tf.where(below_del_threshold)
             self._below_del_threshold_count = tf.reduce_sum(tf.cast(below_del_threshold, tf.int16))
 
-    def _calc_deletion_threshold(self, use_const: bool = True) -> tf.Tensor:
+    def _calc_deletion_threshold(self, configuration: NodeBuildConfiguration) -> tf.Tensor:
         scales = tf.get_collection(self.SCALE_COLLECTION)
         abs_scales = tf.abs(tf.concat(scales, axis=0), 'abs_scales')
 
@@ -679,8 +686,8 @@ class VariableNode(Node):
 
         tf.summary.histogram('abs_scales', abs_scales)
 
-        if use_const:
-            deletion_threshold = tf.constant(0.05)
+        if configuration.const_neuron_deletion_threshold > 0:
+            deletion_threshold = tf.constant(configuration.const_neuron_deletion_threshold)
         else:
             mean, variance = tf.nn.moments(abs_scales, axes=[0], name='scales_moments')
             std = tf.sqrt(variance, name='scales_std')
@@ -724,18 +731,20 @@ class VariableNode(Node):
 
             if self.can_mutate:
                 # Calculate Weigend et al. 1990 regularizer
-                if configuration.penalty_type == 'WEIGEND':
+                if configuration.penalty_type == 'weigend':
                     squared_scales = tf.square(scale)
                     self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
-                elif configuration.penalty_type == 'LINEAR':
+                elif configuration.penalty_type == 'linear':
                     self._penalty_per_output = tf.abs(scale)
                 else:
                     raise ValueError('Unknown penalty type {}'.format(configuration.penalty_type))
                 self._penalty = tf.reduce_sum(self._penalty_per_output)
-                if configuration.linear_depth_penalty:
+                if configuration.depth_penalty == 'linear':
                     self._penalty *= self.max_depth
-                elif configuration.exponential_depth_penalty:
+                elif configuration.depth_penalty == 'exponential':
                     self._penalty *= 2 ** self.max_depth
+                elif configuration.depth_penalty != 'none':
+                    raise ValueError('Unknown depth penalty {}'.format(configuration.depth_penalty))
 
             tf.summary.scalar('depth', self.max_depth)
             tf.summary.histogram('abs_scale', tf.abs(scale))
@@ -837,7 +846,8 @@ class MutatingCnnModel(Model):
     VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True):
+                 checkpoint_dir: Path, probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
+                 node_build_configuration: NodeBuildConfiguration = None):
 
         nodes_file = (checkpoint_dir / 'nodes.pickle')
         if nodes_file.exists():
@@ -855,8 +865,9 @@ class MutatingCnnModel(Model):
                                               non_linearity=False)
 
         self.probabilistic_depth_strategy = probabilistic_depth_strategy
-
         self.output_count_history = deque(maxlen=3)
+        self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
+
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
     def mutate(self, session: tf.Session):
@@ -965,12 +976,11 @@ class MutatingCnnModel(Model):
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         self.is_training = tf.placeholder(tf.bool, name='is_training')
+        self.node_build_configuration.is_training = self.is_training
 
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
-            config = NodeBuildConfiguration(self.is_training)
-            config.penalty_type = 'WEIGEND'
-            self.input_node.build_dag(input_2d, config)
+            self.input_node.build_dag(input_2d, self.node_build_configuration)
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
 

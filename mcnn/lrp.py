@@ -67,11 +67,6 @@ def fprop_conv(F, W, X, strides=None, padding='SAME'):
 
 def fprop_pool(F, X, strides=None, ksize=None, padding='SAME'):
     # Propagate over pool layer
-    xshape = X.get_shape().as_list()
-    fshape = F.get_shape().as_list()
-    if len(xshape) != len(fshape):
-        F = tf.reshape(F, (-1, int(np.ceil(xshape[1] / 2.0)),
-                           int(np.ceil(xshape[2] / 2.0)), xshape[3]))
     ksize = [1, 2, 2, 1] if ksize is None else ksize
     strides = [1, 2, 2, 1] if strides is None else strides
 
@@ -82,7 +77,20 @@ def fprop_pool(F, X, strides=None, ksize=None, padding='SAME'):
     return F
 
 
-SUPPORTED_OPS = {'MatMul', 'Conv2D', 'MaxPool', 'Relu', 'BiasAdd', 'Identity', 'Max', 'Reshape', 'ConcatV2'}
+def fprop_avg_pool(F, X, strides=None, ksize=None, padding='SAME'):
+    # Propagate over pool layer
+    ksize = [1, 2, 2, 1] if ksize is None else ksize
+    strides = [1, 2, 2, 1] if strides is None else strides
+
+    Z = tf.nn.avg_pool(X, strides=strides, ksize=ksize, padding=padding) + 1e-9
+    S = F / Z
+    C = gen_nn_ops._avg_pool_grad(tf.shape(X), S, ksize, strides, padding)
+    F = X * C
+    return F
+
+
+SUPPORTED_OPS = {'MatMul', 'Conv2D', 'MaxPool', 'AvgPool', 'Relu', 'BiasAdd', 'Identity', 'Max', 'Reshape',
+                 'Squeeze', 'ConcatV2'}
 
 
 def _all_parent_ops(child_op: tf.Operation, filter_ops: Set[str], ops: Set[tf.Operation] = None) -> Set[tf.Operation]:
@@ -152,6 +160,12 @@ def lrp(input_tensor: tf.Tensor, logits: tf.Tensor, lowest: float, highest: floa
             ksize = last_op.get_attr('ksize')
             padding = last_op.get_attr('padding')
             relevance_tensor = fprop_pool(relevance_tensor, signal, strides, ksize, padding)
+        elif last_op.type == 'AvgPool':
+            signal = last_op.inputs[0]
+            strides = last_op.get_attr('strides')
+            ksize = last_op.get_attr('ksize')
+            padding = last_op.get_attr('padding')
+            relevance_tensor = fprop_avg_pool(relevance_tensor, signal, strides, ksize, padding)
         elif last_op.type in ['Relu', 'BiasAdd', 'Identity']:
             signal = last_op.inputs[0]
         elif last_op.type == 'Max':
@@ -167,6 +181,9 @@ def lrp(input_tensor: tf.Tensor, logits: tf.Tensor, lowest: float, highest: floa
         elif last_op.type == 'StridedSlice':
             signal = last_op.inputs[0]
             relevance_tensor = array_grad._StridedSliceGrad(last_op, relevance_tensor)[0]
+        elif last_op.type == 'Squeeze':
+            signal = last_op.inputs[0]
+            relevance_tensor = array_grad._SqueezeGrad(last_op, relevance_tensor)[0]
         elif last_op.type == 'ConcatV2':
             signals = last_op.inputs[:-1]
             relevances = array_grad._ConcatGradV2(last_op, relevance_tensor)[:-1]

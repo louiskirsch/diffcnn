@@ -113,11 +113,6 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_
 def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
           steps_per_checkpoint: int, feature_name: str, save: bool = True):
 
-    if not checkpoint_dir.exists():
-        checkpoint_dir.mkdir(parents=True)
-    if not log_dir.exists():
-        log_dir.mkdir(parents=True)
-
     with create_session() as session:
 
         model.restore_or_create(session, checkpoint_dir)
@@ -126,10 +121,6 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
         train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
                                                         sample_length=model.sample_length, loop=True)
         train_sample_iterator = iter(train_sample_generator)
-
-        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name,
-                                                       sample_length=model.sample_length, loop=True)
-        test_sample_iterator = iter(test_sample_generator)
 
         for train_step in range(step_count):
             is_checkpoint_step = (train_step + 1) % steps_per_checkpoint == 0
@@ -152,16 +143,12 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
 
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
-                     should_render_graph: bool, post_train_only_switches: bool = False):
+                     render_graph_steps: int, train_only_switches_fraction: float, summary_every_step: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
-    if not checkpoint_dir.exists():
-        checkpoint_dir.mkdir(parents=True)
     if not checkpoint_dir_mutated.exists():
         checkpoint_dir_mutated.mkdir(parents=True)
-    if not log_dir.exists():
-        log_dir.mkdir(parents=True)
 
     train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
                                                     sample_length=model.sample_length, loop=True)
@@ -184,9 +171,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.input: input,
                     model.labels: labels
                 }
-                train_only_switches = post_train_only_switches and step >= iterate_step_count // 2
+                train_only_switches = float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
                 if step < iterate_step_count - 1:
-                    model.step(session, feed_dict, train=True, update_summary=True,
+                    model.step(session, feed_dict, train=True, update_summary=summary_every_step,
                                train_switches=train_only_switches)
                 else:
                     global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
@@ -205,7 +192,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
-                if should_render_graph and step % 100 == 0:
+                if render_graph_steps and step % render_graph_steps == 0:
                     model.render_graph(session, checkpoint_dir / 'graph_renderings')
 
         model.build()
