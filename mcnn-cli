@@ -64,6 +64,12 @@ class CLI:
                                      help='Render the graph to pdf every n steps specified. Set to 0 to disable.')
         training_parser.add_argument('--summary-every-step', dest='summary_every_step', action='store_true',
                                      help='Log a tensorflow summary every training step.')
+        self._extend_training_and_eval_options(training_parser)
+
+    @staticmethod
+    def _extend_training_and_eval_options(parser: argparse.ArgumentParser):
+        parser.add_argument('--write-result', dest='write_result_file', metavar='FILE_NAME', type=str, default=None,
+                            help='Append accuracy to csv file.')
 
     def _add_lrp_parser(self):
         lrp_parser = self.subparsers.add_parser('lrp', help='Visualize samples using layerwise relevance propagation.',
@@ -72,6 +78,7 @@ class CLI:
     def _add_evaluation_parser(self):
         evaluation_parser = self.subparsers.add_parser('evaluate', help='Evaluate the development or test set.',
                                                        parents=[self.base_parser])
+        self._extend_training_and_eval_options(evaluation_parser)
 
     @lazy
     def parsed(self):
@@ -100,6 +107,9 @@ class CLI:
         parsed.checkpoint_dir = Path(parsed.checkpoint_dir)
         parsed.log_dir = Path(parsed.log_dir)
         parsed.plot_dir = Path(parsed.plot_dir)
+
+        if parsed.write_result_file is not None:
+            parsed.write_result_file = Path(parsed.write_result_file)
 
         if parsed.use_ucr:
             parsed.data_dir /= 'UCR_TS_Archive_2015'

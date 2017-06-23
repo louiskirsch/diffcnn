@@ -2,6 +2,7 @@ import multiprocessing
 from multiprocessing import Process
 
 import logging
+from pathlib import Path
 
 import mcnn.operations as operations
 from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel, NodeBuildConfiguration
@@ -41,11 +42,25 @@ def create_mutating_cnn(dataset: HorizontalDataset, options) -> MutatingCnnModel
     return model
 
 
-def evaluate(options):
+def _write_results(dataset_name: str, write_result_file: Path, accuracy: float):
+    should_add_header = not write_result_file.exists()
+    with write_result_file.open('a') as f:
+        if should_add_header:
+            f.write('dataset_name, accuracy\n')
+        f.write('{}, {}\n'.format(dataset_name, accuracy))
+
+
+def _evaluate_with_result(options) -> float:
     logging.info('Evaluating with options {}'.format(options))
     eval_dataset = HorizontalDataset(options.dataset_train, options.dataset_test)
     eval_model = create_mutating_cnn(eval_dataset, options)
-    operations.evaluate(eval_model, eval_dataset, options.checkpoint_dir, options.log_dir_test, feature_name='')
+    return operations.evaluate(eval_model, eval_dataset, options.checkpoint_dir, options.log_dir_test, feature_name='')
+
+
+def evaluate(options):
+    accuracy = _evaluate_with_result(options)
+    if options.write_result_file is not None:
+        _write_results(options.dataset_name, options.write_result_file, accuracy)
 
 
 def visualize(options):
@@ -63,7 +78,7 @@ def train(options):
     dataset = HorizontalDataset(options.dataset_train, options.dataset_test)
 
     def evaluate_process():
-        proc = Process(target=evaluate, args=(options,))
+        proc = Process(target=_evaluate_with_result, args=(options,))
         proc.start()
 
     model = create_mutating_cnn(dataset, options)
@@ -79,3 +94,6 @@ def train(options):
                                 train_only_switches_fraction=options.train_only_switches_fraction,
                                 summary_every_step=options.summary_every_step)
 
+    if options.write_result_file is not None:
+        accuracy = _evaluate_with_result(options)
+        _write_results(options.dataset_name, options.write_result_file, accuracy)
