@@ -922,15 +922,15 @@ class MutatingCnnModel(Model):
         self.init = tf.group(self.init, tf.variables_initializer(tf.get_collection(self.VOLATILE_VARIABLES)))
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
-        loss = super()._define_loss(cross_entropy)
-        tf.summary.scalar('cross_entropy', loss)
+        self.cross_entropy = super()._define_loss(cross_entropy)
+        tf.summary.scalar('cross_entropy', self.cross_entropy)
         nodes = self.input_node.all_descendants()
         penalties = [node.penalty for node in nodes if node.penalty is not None]
         penalty_sum = tf.add_n(penalties, name='penalty_sum')
         reg_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * penalty_sum
         tf.summary.scalar('l1_penalty', reg_penalty)
         # noinspection PyTypeChecker
-        return loss + reg_penalty
+        return self.cross_entropy + reg_penalty
 
     def _define_training(self):
         scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
@@ -940,12 +940,16 @@ class MutatingCnnModel(Model):
         super()._define_training()
 
         self._track_scales_gradient(scales)
-        self._define_scales_training(scales)
+        self._define_other_optimizations(scales)
 
-    def _define_scales_training(self, scales: List[tf.Variable]):
-        train_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
-                                           var_list=scales, name='train_scales_op')
-        self.train_scales_op = self._with_post_training_update(train_op)
+    def _define_other_optimizations(self, scales: List[tf.Variable]):
+        train_scales_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
+                                                  var_list=scales, name='train_scales_op')
+        self.train_scales_op = self._with_post_training_update(train_scales_op)
+
+        train_wo_penalty_op = self.optimizer.minimize(self.cross_entropy, global_step=self.global_step,
+                                                      name='train_wo_penalty_op')
+        self.train_wo_penalty_op = self._with_post_training_update(train_wo_penalty_op)
 
     def _track_scales_gradient(self, scales: List[tf.Variable]):
         scale_gradients = tf.concat(tf.gradients(self.loss, scales), axis=0)
@@ -1019,15 +1023,18 @@ class MutatingCnnModel(Model):
         return logits
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             update_summary=False, train_switches=False):
+             update_summary=False, train_switches=False, train_wo_penalty=False):
         feed_dict[self.is_training] = train
         output_feed = [self.global_step]
 
         if loss:
             output_feed.append(self.loss)
+        # Only apply a single training mode
         if train_switches:
             output_feed.append(self.train_scales_op)
-        elif train:  # We either train switches or everything
+        elif train_wo_penalty:
+            output_feed.append(self.train_wo_penalty_op)
+        elif train:
             output_feed.append(self.train_op)
         if logits:
             output_feed.append(self.logits)
