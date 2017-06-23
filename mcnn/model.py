@@ -680,7 +680,7 @@ class VariableNode(Node):
         tf.summary.histogram('abs_scales', abs_scales)
 
         if use_const:
-            deletion_threshold = tf.constant(0.1)
+            deletion_threshold = tf.constant(0.05)
         else:
             mean, variance = tf.nn.moments(abs_scales, axes=[0], name='scales_moments')
             std = tf.sqrt(variance, name='scales_std')
