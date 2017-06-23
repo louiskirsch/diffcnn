@@ -213,7 +213,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
                     model.render_graph(session, render_file=graph_file)
-                    summary_buf = graph_rendering_summary.eval({graph_rendering_placeholder: graph_file.read_bytes()},
+                    with graph_file.open(mode='rb') as f:
+                        graph_bytes = f.read()
+                    summary_buf = graph_rendering_summary.eval({graph_rendering_placeholder: graph_bytes},
                                                                session=session)
                     model.summary_writer.add_summary(summary_buf, global_step)
 
