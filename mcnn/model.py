@@ -184,11 +184,12 @@ class NodeBuildConfiguration:
         self.const_neuron_deletion_threshold = 0.0
 
     @classmethod
-    def from_options(cls, options):
+    def from_options(cls, options) -> 'NodeBuildConfiguration':
         config = NodeBuildConfiguration()
         config.depth_penalty = options.depth_penalty
         config.penalty_type = options.penalty_fnc
         config.const_neuron_deletion_threshold = options.neuron_deletion_threshold
+        return config
 
 
 class Node:
