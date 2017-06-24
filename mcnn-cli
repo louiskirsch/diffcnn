@@ -3,6 +3,7 @@
 import argparse
 
 import logging
+import shutil
 from pathlib import Path
 
 from lazy import lazy
@@ -66,6 +67,8 @@ class CLI:
                                      help='Log a tensorflow summary every training step.')
         training_parser.add_argument('--freeze-on-delete', dest='freeze_on_delete', action='store_true',
                                      help='Whether to freeze the architecture on node deletion.')
+        training_parser.add_argument('--restart', dest='should_restart', action='store_true',
+                                     help='Whether to delete the previous run before starting this one.')
         self._extend_training_and_eval_options(training_parser)
 
     @staticmethod
@@ -151,8 +154,11 @@ class CLI:
             self.parsed.plot_dir
         ]
         for directory in directories:
+            assert isinstance(directory, Path)
             if not directory.exists():
                 directory.mkdir(parents=True)
+            elif self.parsed.should_restart:
+                shutil.rmtree(str(directory))
 
 
 if __name__ == "__main__":
