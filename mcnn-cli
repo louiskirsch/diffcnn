@@ -45,6 +45,8 @@ class CLI:
                                  default='none', help='The depth penalty to apply.')
         base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
                                  default='weigend', help='The penalty function to apply.')
+        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-2,
+                                 help='The penalty factor in the loss function.')
         base_parser.add_argument('--neuron-del-thres', dest='neuron_deletion_threshold', type=float, default=0.05,
                                  help='The switch-threshold below which output neurons are deleted.')
         base_parser.add_argument('--learning-rate', dest='learning_rate', type=float, default=1e-3,
@@ -100,7 +102,8 @@ class CLI:
                 ('del-thres', parsed.neuron_deletion_threshold),
                 ('penalty-fnc', parsed.penalty_fnc),
                 ('switches-frac', parsed.train_only_switches_fraction),
-                ('freeze-on-delete', parsed.freeze_on_delete)
+                ('freeze-on-delete', parsed.freeze_on_delete),
+                ('penalty-factor', parsed.penalty_factor),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

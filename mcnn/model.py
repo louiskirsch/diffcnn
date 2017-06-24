@@ -378,11 +378,7 @@ class VariableNode(Node):
 
     SCALE_COLLECTION = 'SCALE_COLLECTION'
 
-    # Parameters from 2016 Miconi
     NEURONS_BELOW_DEL_THRESHOLD = 1
-    # TODO how to get rid of this hyperparameter?
-    L1_NORM_PENALTY_STRENGTH = 1e-2
-
     DELETE_NODE_THRESHOLD = 1
     OUTPUT_INCREMENT = 16
 
@@ -851,7 +847,8 @@ class MutatingCnnModel(Model):
     VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
+                 checkpoint_dir: Path, penalty_factor: float,
+                 probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None):
 
         nodes_file = (checkpoint_dir / 'nodes.pickle')
@@ -873,6 +870,7 @@ class MutatingCnnModel(Model):
         self.output_count_history = deque(maxlen=3)
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
         self.architecture_frozen = False
+        self.penalty_factor = penalty_factor
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
@@ -927,7 +925,7 @@ class MutatingCnnModel(Model):
         nodes = self.input_node.all_descendants()
         penalties = [node.penalty for node in nodes if node.penalty is not None]
         penalty_sum = tf.add_n(penalties, name='penalty_sum')
-        reg_penalty = VariableNode.L1_NORM_PENALTY_STRENGTH * penalty_sum
+        reg_penalty = self.penalty_factor * penalty_sum
         tf.summary.scalar('l1_penalty', reg_penalty)
         # noinspection PyTypeChecker
         return self.cross_entropy + reg_penalty
