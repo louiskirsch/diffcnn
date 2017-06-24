@@ -159,6 +159,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
     if not checkpoint_dir_mutated.exists():
         checkpoint_dir_mutated.mkdir(parents=True)
 
+    # Some datasets have even fewer samples than batch_size
+    model.batch_size = min(model.batch_size, dataset.train_sample_count)
+
     train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
                                                     sample_length=model.sample_length, loop=True)
     train_sample_iterator = iter(train_sample_generator)

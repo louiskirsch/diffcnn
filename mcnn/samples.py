@@ -17,11 +17,12 @@ def batch_samples_from_callback(sample_callback, batch_size: int) -> Tuple[np.nd
 
 
 def batch_generator(sample_iterator, batch_size: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
-    args = [iter(sample_iterator)] * batch_size
-    for batch in zip(*args):
-        x, y = zip(*batch)
-        x = np.stack(x, axis=0)
-        y = np.stack(y, axis=0)
+    while True:
+        batch = list(itertools.islice(sample_iterator, batch_size))
+        if len(batch) == 0:
+            return
+        x = np.stack((x for x, y in batch), axis=0)
+        y = np.stack((y for x, y in batch), axis=0)
         yield x, y
 
 
@@ -39,6 +40,10 @@ class Dataset:
 
     @property
     def test_sample_count(self) -> int:
+        return -1
+
+    @property
+    def train_sample_count(self) -> int:
         return -1
 
 
@@ -60,50 +65,46 @@ class HorizontalDataset(Dataset):
         return self.df_test.shape[0]
 
     @property
+    def train_sample_count(self) -> int:
+        return self.df_train.shape[0]
+
+    @property
     def target_classes_count(self):
         return self._target_classes_count
 
-    def _sample_randomly(self, dataset: pd.DataFrame, sample_length: int) -> Tuple[np.ndarray, int]:
-        row_count, entry_length = dataset.shape
-        ts_length = entry_length - 1
-        row = np.random.randint(0, row_count)
-        offset = np.random.randint(1, ts_length - sample_length + 1)
-        x = dataset.iloc[row, offset:offset + sample_length].values
-        y = self.class_to_id[dataset.iloc[row, 0]]
-        return x, y
-
-    def _generate_samples(self, dataset: pd.DataFrame) -> Tuple[np.ndarray, int]:
+    def _generate_samples(self, dataset: pd.DataFrame, loop: bool) -> Tuple[np.ndarray, int]:
         row_count = dataset.shape[0]
-        for row_index in np.random.permutation(row_count):
-            x = dataset.iloc[row_index, 1:].values
-            y = self.class_to_id[dataset.iloc[row_index, 0]]
-            yield x, y
+        while True:
+            for row_index in np.random.permutation(row_count):
+                x = dataset.iloc[row_index, 1:].values
+                y = self.class_to_id[dataset.iloc[row_index, 0]]
+                yield x, y
+            if not loop:
+                return
 
-    def _generate_samples_with_offset(self, dataset: pd.DataFrame, sample_length: int) -> Tuple[np.ndarray, int]:
+    def _generate_samples_with_offset(self, dataset: pd.DataFrame, sample_length: int,
+                                      loop: bool) -> Tuple[np.ndarray, int]:
         row_count = dataset.shape[0]
         offset_count = self.sample_length - sample_length + 1
         samples_spec = list(itertools.product(range(row_count), range(offset_count)))
-        random.shuffle(samples_spec)
-        for row_index, offset in samples_spec:
-            start = 1 + offset
-            end = start + sample_length
-            x = dataset.iloc[row_index, start:end].values
-            y = self.class_to_id[dataset.iloc[row_index, 0]]
-            yield x, y
+        while True:
+            random.shuffle(samples_spec)
+            for row_index, offset in samples_spec:
+                start = 1 + offset
+                end = start + sample_length
+                x = dataset.iloc[row_index, start:end].values
+                y = self.class_to_id[dataset.iloc[row_index, 0]]
+                yield x, y
+            if not loop:
+                return
 
     def data_generator(self, dataset: str, batch_size: int, sample_length: int = None,
                        loop: bool = False, **kwargs) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
         dataset = self.df_train if dataset == 'train' else self.df_test
         if sample_length is None or self.sample_length == sample_length:
-            while True:
-                yield from batch_generator(self._generate_samples(dataset), batch_size)
-                if not loop:
-                    break
+            yield from batch_generator(self._generate_samples(dataset, loop), batch_size)
         else:
-            while True:
-                yield from batch_generator(self._generate_samples_with_offset(dataset, sample_length), batch_size)
-                if not loop:
-                    break
+            yield from batch_generator(self._generate_samples_with_offset(dataset, sample_length, loop), batch_size)
 
 
 class PercentalSplitDataset(Dataset):
