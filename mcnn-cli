@@ -104,7 +104,6 @@ class CLI:
                 ('del-thres', parsed.neuron_deletion_threshold),
                 ('penalty-fnc', parsed.penalty_fnc),
                 ('switches-frac', parsed.train_only_switches_fraction),
-                ('freeze-on-delete', parsed.freeze_on_delete),
                 ('penalty-factor', parsed.penalty_factor),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
@@ -119,7 +118,7 @@ class CLI:
         parsed.log_dir = Path(parsed.log_dir)
         parsed.plot_dir = Path(parsed.plot_dir)
 
-        if parsed.write_result_file is not None:
+        if 'write_result_file' in parsed and parsed.write_result_file is not None:
             parsed.write_result_file = Path(parsed.write_result_file)
 
         if parsed.use_ucr:
