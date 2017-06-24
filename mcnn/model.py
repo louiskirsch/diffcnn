@@ -874,7 +874,7 @@ class MutatingCnnModel(Model):
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
-    def mutate(self, session: tf.Session, freeze_on_delete: bool):
+    def mutate(self, session: tf.Session, freeze_on_delete: bool, delete_shrinking_last_node: bool):
         if self.architecture_frozen:
             return
 
@@ -882,11 +882,15 @@ class MutatingCnnModel(Model):
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         last_node = self.max_depth_mutatable_conv_node
         last_node_majority_used = last_node.get_usage(session) > 0.5
+        last_node_outputs_before = last_node.output_count
 
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert isinstance(node, VariableNode) and node.is_built()
                 node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
+
+        if delete_shrinking_last_node and last_node.output_count < last_node_outputs_before:
+            last_node.delete(session, self.optimizer)
 
         if freeze_on_delete:
             nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0

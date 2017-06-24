@@ -151,7 +151,8 @@ def _define_custom_image_summary(name: str) -> Tuple[tf.Tensor, tf.Tensor]:
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
                      checkpoint_written_callback: Callable, render_graph_steps: int,
-                     train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool):
+                     train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
+                     delete_shrinking_last_node: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -204,7 +205,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                         checkpoint_written_callback()
 
                     architecture_frozen_previously = model.architecture_frozen
-                    model.mutate(session, freeze_on_delete)
+                    model.mutate(session, freeze_on_delete, delete_shrinking_last_node)
                     logging.info('Model mutated')
                     if model.architecture_frozen and not architecture_frozen_previously:
                         # Stop training soon
