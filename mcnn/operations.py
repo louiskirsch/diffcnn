@@ -25,7 +25,9 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
 
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
-        model.batch_size = dataset.test_sample_count
+
+        # Some datasets have even fewer samples than batch_size
+        model.batch_size = min(model.batch_size, dataset.test_sample_count)
 
         test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
                                                        sample_length=model.sample_length)
@@ -34,19 +36,28 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         correct_total_count = 0
         batches_count = 0
         loss_sum = 0
+        global_step = None
+
         for input, labels in test_sample_generator:
             feed_dict = {
                 model.input: input,
                 model.labels: labels
             }
-            global_step, loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True,
-                                                          update_summary=True)
+            global_step, loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True)
             sample_total_count += input.shape[0]
             correct_total_count += correct_count
-            batches_count +=1
+            batches_count += 1
             loss_sum += loss
+
         accuracy = correct_total_count / sample_total_count
+        testing_error = 1 - accuracy
         loss = loss_sum / batches_count
+        summary = tf.Summary()
+        summary.value.add(tag='evaluation/accuracy', simple_value=accuracy)
+        summary.value.add(tag='evaluation/testing_error', simple_value=testing_error)
+        summary.value.add(tag='training/loss', simple_value=loss)
+        model.summary_writer.add_summary(summary, global_step)
+
         print('[Test] Loss {:.2f} Accuracy {:.2f}%'.format(loss, accuracy * 100))
         return accuracy
 
