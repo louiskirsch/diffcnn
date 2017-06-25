@@ -57,6 +57,8 @@ class CLI:
         base_parser.add_argument('--only-switches', dest='train_only_switches_fraction', type=float, default=0,
                                  help='The fraction of training between mutations to be used only for training'
                                       'switches.')
+        base_parser.add_argument('--switches-lr-factor', dest='switches_lr_factor', type=float, default=1,
+                                 help='The factor to multiply gradients with when only training switches.')
         return base_parser
 
     def _add_training_parser(self):
@@ -107,6 +109,7 @@ class CLI:
                 ('del-thres', parsed.neuron_deletion_threshold),
                 ('penalty-fnc', parsed.penalty_fnc),
                 ('switches-frac', parsed.train_only_switches_fraction),
+                ('switches-lrf', parsed.switches_lr_factor),
                 ('penalty-factor', parsed.penalty_factor),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)

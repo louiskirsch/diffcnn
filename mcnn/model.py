@@ -12,7 +12,6 @@ import itertools
 import numpy as np
 import scipy.misc
 import tensorflow as tf
-import tensorflow.contrib.distributions as tfd
 import pickle
 import logging
 import graphviz
@@ -847,7 +846,7 @@ class MutatingCnnModel(Model):
     VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, penalty_factor: float,
+                 checkpoint_dir: Path, penalty_factor: float, scales_lr_factor: float,
                  probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None):
 
@@ -871,6 +870,7 @@ class MutatingCnnModel(Model):
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
         self.architecture_frozen = False
         self.penalty_factor = penalty_factor
+        self.scales_lr_factor = scales_lr_factor
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
@@ -945,8 +945,10 @@ class MutatingCnnModel(Model):
         self._define_other_optimizations(scales)
 
     def _define_other_optimizations(self, scales: List[tf.Variable]):
-        train_scales_op = self.optimizer.minimize(self.loss, global_step=self.global_step,
-                                                  var_list=scales, name='train_scales_op')
+        grads = self.optimizer.compute_gradients(self.loss, var_list=scales)
+        grads = [(grad * self.scales_lr_factor, var) for grad, var in grads]
+        tf.summary.histogram('train_scales_grads', tf.concat([grad for grad, var in grads], axis=0))
+        train_scales_op = self.optimizer.apply_gradients(grads, global_step=self.global_step, name='train_scales_op')
         self.train_scales_op = self._with_post_training_update(train_scales_op)
 
         train_wo_penalty_op = self.optimizer.minimize(self.cross_entropy, global_step=self.global_step,
