@@ -156,7 +156,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                      plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
                      checkpoint_written_callback: Callable, render_graph_steps: int,
                      train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
-                     delete_shrinking_last_node: bool):
+                     delete_shrinking_last_node: bool, only_switches_lr: float):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -192,6 +192,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                 }
                 train_only_switches = not model.architecture_frozen and \
                                       float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
+                if train_only_switches:
+                    feed_dict[model.learning_rate] = only_switches_lr
                 if step < iterate_step_count - 1:
                     global_step, _ = model.step(session, feed_dict, train=True, update_summary=summary_every_step,
                                                 train_switches=train_only_switches,

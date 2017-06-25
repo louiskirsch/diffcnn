@@ -38,7 +38,6 @@ def create_mutating_cnn(dataset: HorizontalDataset, options) -> MutatingCnnModel
                              sample_length=dataset.sample_length,
                              checkpoint_dir=options.checkpoint_dir,
                              penalty_factor=options.penalty_factor,
-                             scales_lr_factor=options.switches_lr_factor,
                              global_avg_pool=options.global_avg_pool,
                              node_build_configuration=NodeBuildConfiguration.from_options(options))
     return model
@@ -95,6 +94,7 @@ def train(options):
                                 checkpoint_written_callback=evaluate_process,
                                 render_graph_steps=options.render_graph_steps,
                                 train_only_switches_fraction=options.train_only_switches_fraction,
+                                only_switches_lr=options.only_switches_learning_rate,
                                 summary_every_step=options.summary_every_step,
                                 freeze_on_delete=options.freeze_on_delete,
                                 delete_shrinking_last_node=options.delete_shrinking_last_node)
