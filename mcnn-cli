@@ -43,10 +43,13 @@ class CLI:
                                  help='Use global average pooling instead of fully connected layers.')
         base_parser.add_argument('--depth-penalty', dest='depth_penalty', choices=['exponential', 'linear', 'none'],
                                  default='none', help='The depth penalty to apply.')
+        # Miconi paper used linear
         base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
                                  default='weigend', help='The penalty function to apply.')
-        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-2,
+        # Miconi paper used 1e-4
+        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-4,
                                  help='The penalty factor in the loss function.')
+        # Miconi paper used 0.05
         base_parser.add_argument('--neuron-del-thres', dest='neuron_deletion_threshold', type=float, default=0.05,
                                  help='The switch-threshold below which output neurons are deleted.')
         base_parser.add_argument('--learning-rate', dest='learning_rate', type=float, default=1e-3,
