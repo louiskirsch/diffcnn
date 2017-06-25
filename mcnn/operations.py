@@ -188,7 +188,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.input: input,
                     model.labels: labels
                 }
-                train_only_switches = float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
+                train_only_switches = not model.architecture_frozen and \
+                                      float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
                 if step < iterate_step_count - 1:
                     global_step, _ = model.step(session, feed_dict, train=True, update_summary=summary_every_step,
                                                 train_switches=train_only_switches,
@@ -212,7 +213,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     if model.architecture_frozen and not architecture_frozen_previously:
                         # Stop training soon
-                        steps_left = 4 * steps_per_checkpoint
+                        steps_left = steps_per_checkpoint
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
