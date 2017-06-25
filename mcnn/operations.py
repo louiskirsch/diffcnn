@@ -152,13 +152,6 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                 model.step(session, feed_dict, train=True)
 
 
-def _define_custom_image_summary(name: str) -> Tuple[tf.Tensor, tf.Tensor]:
-    img_placeholder = tf.placeholder(dtype=tf.string, name=name + '_placeholder')
-    image = tf.image.decode_png(img_placeholder, channels=4)
-    image = tf.expand_dims(image, 0)
-    return img_placeholder, tf.summary.image(name, image)
-
-
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
                      plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
                      checkpoint_written_callback: Callable, render_graph_steps: int,
@@ -177,6 +170,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                                                     sample_length=model.sample_length, loop=True)
     train_sample_iterator = iter(train_sample_generator)
 
+    graph_file = plot_dir / 'graph.png'
     steps_left = step_count
 
     while steps_left > 0:
@@ -188,9 +182,6 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
             used_checkpoint_dir = checkpoint_dir if is_initial_iteration else checkpoint_dir_mutated
             model.restore_or_create(session, used_checkpoint_dir)
             model.setup_summary_writer(session, log_dir)
-
-            graph_file = plot_dir / 'graph.png'
-            graph_rendering_placeholder, graph_rendering_summary = _define_custom_image_summary('graph_rendering')
 
             logging.info('Started training')
             for step in range(iterate_step_count):
@@ -231,9 +222,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.render_graph(session, render_file=graph_file)
                     with graph_file.open(mode='rb') as f:
                         graph_bytes = f.read()
-                    summary_buf = graph_rendering_summary.eval({graph_rendering_placeholder: graph_bytes},
-                                                               session=session)
-                    model.summary_writer.add_summary(summary_buf, global_step)
+                    img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
+                    summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
+                    model.summary_writer.add_summary(summary, global_step)
 
         model.build()
         logging.info('Model rebuilt')
