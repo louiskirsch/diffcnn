@@ -6,7 +6,7 @@ from pathlib import Path
 
 import mcnn.operations as operations
 from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel, NodeBuildConfiguration
-from mcnn.samples import HorizontalDataset, Dataset
+from mcnn.samples import HorizontalDataset, Dataset, AugmentedDataset
 
 
 def create_mcnn(dataset: Dataset) -> Model:
@@ -31,7 +31,7 @@ def create_mcnn(dataset: Dataset) -> Model:
     return model
 
 
-def create_mutating_cnn(dataset: HorizontalDataset, options) -> MutatingCnnModel:
+def create_mutating_cnn(dataset: Dataset, options) -> MutatingCnnModel:
     model = MutatingCnnModel(batch_size=options.batch_size,
                              num_classes=dataset.target_classes_count,
                              learning_rate=options.learning_rate,

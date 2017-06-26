@@ -27,7 +27,8 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         model.setup_summary_writer(session, log_dir)
 
         # Some datasets have even fewer samples than batch_size
-        model.batch_size = min(model.batch_size, dataset.test_sample_count)
+        if dataset.test_sample_count:
+            model.batch_size = min(model.batch_size, dataset.test_sample_count)
 
         test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
                                                        sample_length=model.sample_length)
@@ -164,7 +165,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
         checkpoint_dir_mutated.mkdir(parents=True)
 
     # Some datasets have even fewer samples than batch_size
-    model.batch_size = min(model.batch_size, dataset.train_sample_count)
+    if dataset.train_sample_count:
+        model.batch_size = min(model.batch_size, dataset.train_sample_count)
 
     train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
                                                     sample_length=model.sample_length, loop=True)

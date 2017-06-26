@@ -33,18 +33,66 @@ class Dataset:
                        sample_length: int = None, loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
         raise NotImplementedError()
 
-    @abstractproperty
     @property
+    @abstractmethod
     def target_classes_count(self):
         raise NotImplementedError()
 
     @property
+    def sample_length(self):
+        return 0
+
+    @property
     def test_sample_count(self) -> int:
-        return -1
+        return 0
 
     @property
     def train_sample_count(self) -> int:
-        return -1
+        return 0
+
+
+class AugmentedDataset(Dataset):
+
+    def __init__(self, orig_dataset: Dataset, scale: bool = False, noise: bool = True):
+        self.orig_dataset = orig_dataset
+        self.scale = scale
+        self.noise = noise
+
+    @property
+    def target_classes_count(self):
+        return self.orig_dataset.target_classes_count
+
+    @property
+    def sample_length(self):
+        return self.orig_dataset.sample_length
+
+    @staticmethod
+    def _add_noise(x: np.ndarray) -> np.ndarray:
+        min_values = np.min(x, axis=1)
+        max_values = np.max(x, axis=1)
+        ranges = max_values - min_values
+        scale = np.tile(ranges / 100, (x.shape[1], 1)).T
+        noise = np.random.normal(loc=0, scale=scale, size=x.shape)
+        return x + noise
+
+    @staticmethod
+    def _scale(x: np.ndarray) -> np.ndarray:
+        means = np.mean(x, axis=1)
+        means = np.expand_dims(means, axis=1)
+        centered = x - means
+        scale = np.random.uniform(0.5, 1.5, (x.shape[0], 1))
+        scaled = centered * scale
+        return scaled + means
+
+    def data_generator(self, dataset: str, batch_size: int, feature_name: str = None, sample_length: int = None,
+                       loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+        for x, y in self.orig_dataset.data_generator(dataset=dataset, batch_size=batch_size, feature_name=feature_name,
+                                                     sample_length=sample_length, loop=loop):
+            if self.noise:
+                x = self._add_noise(x)
+            if self.scale:
+                x = self._scale(x)
+            yield x, y
 
 
 class HorizontalDataset(Dataset):
