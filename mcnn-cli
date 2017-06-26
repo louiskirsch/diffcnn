@@ -54,10 +54,10 @@ class CLI:
                                  help='The switch-threshold below which output neurons are deleted.')
         base_parser.add_argument('--learning-rate', dest='learning_rate', type=float, default=1e-3,
                                  help='The initial learning rate.')
-        base_parser.add_argument('--only-switches', dest='train_only_switches_fraction', type=float, default=0,
+        base_parser.add_argument('--only-switches', dest='train_only_switches_fraction', type=float, default=0.1,
                                  help='The fraction of training between mutations to be used only for training'
                                       'switches.')
-        base_parser.add_argument('--switches-lr', dest='only_switches_learning_rate', type=float, default=1e-2,
+        base_parser.add_argument('--switches-lr', dest='only_switches_learning_rate', type=float, default=5e-2,
                                  help='The learning rate to use when only training switches.')
         base_parser.add_argument('--dropout', dest='dropout_keep_prob', metavar='KEEP_PROB', type=float, default=0.5,
                                  help='Enable dropout with the given keep probability. '
