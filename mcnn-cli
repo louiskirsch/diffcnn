@@ -59,6 +59,9 @@ class CLI:
                                       'switches.')
         base_parser.add_argument('--switches-lr', dest='only_switches_learning_rate', type=float, default=1e-2,
                                  help='The learning rate to use when only training switches.')
+        base_parser.add_argument('--dropout', dest='dropout_keep_prob', metavar='KEEP_PROB', type=float, default=0.5,
+                                 help='Enable dropout with the given keep probability. '
+                                      'Set to 0 to disable. Default is 0.5')
         return base_parser
 
     def _add_training_parser(self):
@@ -111,6 +114,7 @@ class CLI:
                 ('switches-frac', parsed.train_only_switches_fraction),
                 ('switches-lr', parsed.only_switches_learning_rate),
                 ('penalty-factor', parsed.penalty_factor),
+                ('dropout', parsed.dropout_keep_prob),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

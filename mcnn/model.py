@@ -179,9 +179,11 @@ class NodeBuildConfiguration:
 
     def __init__(self):
         self.is_training = None
+        self.dropout_enabled = None
         self.depth_penalty = 'none'
         self.penalty_type = 'weigend'
         self.const_neuron_deletion_threshold = 0.0
+        self.dropout_keep_prob = 0.5
 
     @classmethod
     def from_options(cls, options) -> 'NodeBuildConfiguration':
@@ -189,6 +191,7 @@ class NodeBuildConfiguration:
         config.depth_penalty = options.depth_penalty
         config.penalty_type = options.penalty_fnc
         config.const_neuron_deletion_threshold = options.neuron_deletion_threshold
+        config.dropout_keep_prob = options.dropout_keep_prob
         return config
 
 
@@ -367,10 +370,14 @@ class InputNode(Node):
         self.build_descendants(configuration)
         self.post_build_all(configuration)
 
-    def _build(self, configuration):
+    def _build(self, configuration: NodeBuildConfiguration):
         super()._build(configuration)
         with tf.variable_scope('input_node'):
-            self.output_tensor = tf.identity(self._tmp_input, name='reshaped_input')
+            output = tf.identity(self._tmp_input, name='reshaped_input')
+            if configuration.dropout_keep_prob:
+                dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
+                output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
+            self.output_tensor = output
         self._tmp_input = None
 
 
@@ -730,6 +737,10 @@ class VariableNode(Node):
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
 
+            if configuration.dropout_keep_prob:
+                dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
+                output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
+
             if self.can_mutate:
                 # Calculate Weigend et al. 1990 regularizer
                 if configuration.penalty_type == 'weigend':
@@ -999,7 +1010,9 @@ class MutatingCnnModel(Model):
 
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         self.is_training = tf.placeholder(tf.bool, name='is_training')
+        self.dropout_enabled = tf.placeholder(tf.bool, name='dropout_enabled')
         self.node_build_configuration.is_training = self.is_training
+        self.node_build_configuration.dropout_enabled = self.dropout_enabled
 
         with tf.variable_scope('nodes') as scope:
             self._nodes_scope = scope
@@ -1025,7 +1038,8 @@ class MutatingCnnModel(Model):
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
              update_summary=False, train_switches=False, train_wo_penalty=False):
-        feed_dict[self.is_training] = train
+        feed_dict[self.is_training] = train or train_switches or train_wo_penalty
+        feed_dict[self.dropout_enabled] = (train or train_wo_penalty) and not train_switches
         output_feed = [self.global_step]
 
         if loss:
