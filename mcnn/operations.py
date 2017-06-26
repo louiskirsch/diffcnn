@@ -178,11 +178,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
     while steps_left > 0:
         iterate_step_count = min(steps_left, steps_per_checkpoint)
         steps_left -= iterate_step_count
-        is_initial_iteration = steps_left == step_count
 
         with create_session() as session:
-            used_checkpoint_dir = checkpoint_dir if is_initial_iteration else checkpoint_dir_mutated
-            model.restore_or_create(session, used_checkpoint_dir)
+            model.restore_or_create(session, checkpoint_dir_mutated)
             model.setup_summary_writer(session, log_dir)
 
             logging.info('Started training')
@@ -219,7 +217,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     if model.architecture_frozen and not architecture_frozen_previously:
                         # Stop training soon
-                        steps_left = 2 * steps_per_checkpoint
+                        steps_left = 4 * steps_per_checkpoint
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
