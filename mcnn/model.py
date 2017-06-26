@@ -184,6 +184,7 @@ class NodeBuildConfiguration:
         self.penalty_type = 'weigend'
         self.const_neuron_deletion_threshold = 0.0
         self.dropout_keep_prob = 0.5
+        self.input_dropout_keep_prob = 0.0
 
     @classmethod
     def from_options(cls, options) -> 'NodeBuildConfiguration':
@@ -192,6 +193,7 @@ class NodeBuildConfiguration:
         config.penalty_type = options.penalty_fnc
         config.const_neuron_deletion_threshold = options.neuron_deletion_threshold
         config.dropout_keep_prob = options.dropout_keep_prob
+        config.input_dropout_keep_prob = options.input_dropout_keep_prob
         return config
 
 
@@ -374,8 +376,8 @@ class InputNode(Node):
         super()._build(configuration)
         with tf.variable_scope('input_node'):
             output = tf.identity(self._tmp_input, name='reshaped_input')
-            if configuration.dropout_keep_prob:
-                dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
+            if configuration.input_dropout_keep_prob:
+                dropped = tf.nn.dropout(output, configuration.input_dropout_keep_prob)
                 output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
             self.output_tensor = output
         self._tmp_input = None
