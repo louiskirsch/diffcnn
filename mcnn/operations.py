@@ -214,7 +214,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     logging.info('Model mutated')
                     if model.architecture_frozen and not architecture_frozen_previously:
                         # Stop training soon
-                        steps_left = 4 * steps_per_checkpoint
+                        steps_left = 0
                     model.save(session, checkpoint_dir_mutated)
                     logging.info('Model saved')
                 if render_graph_steps and step % render_graph_steps == 0:
