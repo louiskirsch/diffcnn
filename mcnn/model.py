@@ -902,8 +902,10 @@ class MutatingCnnModel(Model):
                 assert isinstance(node, VariableNode) and node.is_built()
                 node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
 
-        if delete_shrinking_last_node and last_node.output_count < last_node_outputs_before:
-            last_node.delete(session, self.optimizer)
+        if delete_shrinking_last_node and last_node.output_count < last_node_outputs_before and freeze_on_delete:
+            # last_node.delete(session, self.optimizer)
+            self.architecture_frozen = True
+            return
 
         if freeze_on_delete:
             nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0
