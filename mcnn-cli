@@ -142,6 +142,7 @@ class CLI:
             parsed.dataset_test = parsed.data_dir / parsed.dataset_name / (parsed.dataset_name + '_TEST')
 
         parsed.checkpoint_dir /= parsed.run_name
+        parsed.checkpoint_dir_mutated = parsed.checkpoint_dir.with_name(parsed.checkpoint_dir.name + '_mutated')
         parsed.plot_dir /= parsed.run_name
         parsed.log_dir_train = parsed.log_dir / (parsed.run_name + '_train')
         parsed.log_dir_test = parsed.log_dir / (parsed.run_name + '_test')
@@ -168,6 +169,7 @@ class CLI:
     def _ensure_directories(self):
         directories = [
             self.parsed.checkpoint_dir,
+            self.parsed.checkpoint_dir_mutated,
             self.parsed.log_dir_train,
             self.parsed.log_dir_test,
             self.parsed.plot_dir
