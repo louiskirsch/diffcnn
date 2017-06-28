@@ -5,7 +5,8 @@ import logging
 from pathlib import Path
 
 import mcnn.operations as operations
-from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel, NodeBuildConfiguration
+from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel, NodeBuildConfiguration, \
+    NodeMutationConfiguration
 from mcnn.samples import HorizontalDataset, Dataset, AugmentedDataset
 
 
@@ -40,7 +41,8 @@ def create_mutating_cnn(dataset: Dataset, options) -> MutatingCnnModel:
                              penalty_factor=options.penalty_factor,
                              new_layer_penalty_multiplier=options.new_layer_penalty_multiplier,
                              global_avg_pool=options.global_avg_pool,
-                             node_build_configuration=NodeBuildConfiguration.from_options(options))
+                             node_build_configuration=NodeBuildConfiguration.from_options(options),
+                             node_mutate_configuration=NodeMutationConfiguration.from_options(options))
     return model
 
 

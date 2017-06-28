@@ -68,6 +68,8 @@ class CLI:
                                       'Set to 0 to disable. Default is disabled.')
         base_parser.add_argument('--new-layer-penalty-multiplier', dest='new_layer_penalty_multiplier', type=float,
                                  default=1.0, help='The penalty multiplier for newly created layers.')
+        base_parser.add_argument('--minimum-outputs', dest='minimum_outputs', type=int, default=10,
+                                 help='The minimum outputs a layer requires to not be deleted.')
         return base_parser
 
     def _add_training_parser(self):
@@ -123,6 +125,7 @@ class CLI:
                 ('dropout', parsed.dropout_keep_prob),
                 ('input-dropout', parsed.input_dropout_keep_prob),
                 ('new-l-penalty-m', parsed.new_layer_penalty_multiplier),
+                ('min-outputs', parsed.minimum_outputs),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

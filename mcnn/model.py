@@ -197,6 +197,21 @@ class NodeBuildConfiguration:
         return config
 
 
+class NodeMutationConfiguration:
+
+    def __init__(self):
+        self.outputs_below_del_threshold = 1
+        self.minimum_outputs = 10
+        self.output_increment = 16
+        self.allow_node_creation = False
+
+    @classmethod
+    def from_options(cls, options) -> 'NodeMutationConfiguration':
+        config = cls()
+        config.minimum_outputs = options.minimum_outputs
+        return config
+
+
 class Node:
 
     def __init__(self, parents: List):
@@ -387,9 +402,7 @@ class VariableNode(Node):
 
     SCALE_COLLECTION = 'SCALE_COLLECTION'
 
-    NEURONS_BELOW_DEL_THRESHOLD = 1
-    DELETE_NODE_THRESHOLD = 1
-    OUTPUT_INCREMENT = 16
+    INITIAL_OUTPUT_COUNT = 16
 
     def __init__(self, parents: List, non_linearity: bool = True):
         super().__init__(parents)
@@ -428,25 +441,26 @@ class VariableNode(Node):
         self.penalty_multiplier = 1
         self.reset()
 
-    def mutate(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
+    def mutate(self, session: tf.Session, optimizer: tf.train.Optimizer, config: NodeMutationConfiguration):
         if not self.can_mutate:
             return
         count = self._below_del_threshold_count.eval(session=session)
         logging.info('{} neurons below del threshold'.format(count))
-        if count < self.NEURONS_BELOW_DEL_THRESHOLD:
+        if count < config.outputs_below_del_threshold:
             logging.info('Growing')
-            self.grow(session, optimizer, allow_node_creation)
-        elif count > self.NEURONS_BELOW_DEL_THRESHOLD:
+            self.grow(session, optimizer, config)
+        elif count > config.outputs_below_del_threshold:
             logging.info('Shrinking')
             deletion_indices = self._below_del_threshold_indices.eval(session=session)
-            self.shrink(session, optimizer, deletion_indices[self.NEURONS_BELOW_DEL_THRESHOLD:])
+            self.shrink(session, optimizer, deletion_indices[config.outputs_below_del_threshold:], config)
 
-    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
-        self._add_outputs(session, optimizer, self.OUTPUT_INCREMENT)
+    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, config: NodeMutationConfiguration):
+        self._add_outputs(session, optimizer, config.output_increment)
 
-    def shrink(self, session: tf.Session, optimizer: tf.train.Optimizer, deletion_indices: np.ndarray):
-        active_outputs = self.output_count - deletion_indices.shape[0] - self.NEURONS_BELOW_DEL_THRESHOLD
-        if active_outputs < self.DELETE_NODE_THRESHOLD:
+    def shrink(self, session: tf.Session, optimizer: tf.train.Optimizer, deletion_indices: np.ndarray,
+               config: NodeMutationConfiguration):
+        active_outputs = self.output_count - deletion_indices.shape[0] - config.outputs_below_del_threshold
+        if active_outputs < config.minimum_outputs:
             self.delete(session, optimizer)
         else:
             self._remove_outputs(session, optimizer, deletion_indices)
@@ -813,7 +827,7 @@ class ConvNode(VariableNode):
         super().__init__(parents, non_linearity)
         self.can_mutate = fixed_output_channel_count is None
         self.stride = random.randint(1, 2)
-        self._output_count = fixed_output_channel_count or self.OUTPUT_INCREMENT
+        self._output_count = fixed_output_channel_count or self.INITIAL_OUTPUT_COUNT
 
     @property
     def label(self) -> str:
@@ -837,12 +851,12 @@ class ConvNode(VariableNode):
         super().__setstate__(state)
         self.stride = state['stride']
 
-    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
+    def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, config: NodeMutationConfiguration):
         create_probabilistically = random.random() < self.NEW_NODE_PROBABILITY
-        if allow_node_creation and create_probabilistically:
+        if config.allow_node_creation and create_probabilistically:
             self.create_new_node(session, optimizer)
         else:
-            super().grow(session, optimizer, allow_node_creation)
+            super().grow(session, optimizer, config)
 
     def create_new_node(self, session: tf.Session, optimizer: tf.train.Optimizer) -> 'ConvNode':
         old_children = list(self.children)
@@ -867,7 +881,8 @@ class MutatingCnnModel(Model):
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
                  checkpoint_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
                  probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
-                 node_build_configuration: NodeBuildConfiguration = None):
+                 node_build_configuration: NodeBuildConfiguration = None,
+                 node_mutate_configuration: NodeMutationConfiguration = None):
 
         nodes_file = (checkpoint_dir / 'nodes.pickle')
         if nodes_file.exists():
@@ -887,6 +902,7 @@ class MutatingCnnModel(Model):
         self.probabilistic_depth_strategy = probabilistic_depth_strategy
         self.output_count_history = deque(maxlen=3)
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
+        self.node_mutate_configuration = node_mutate_configuration or NodeMutationConfiguration()
         self.architecture_frozen = False
         self.penalty_factor = penalty_factor
         self.new_layer_penalty_multiplier = new_layer_penalty_multiplier
@@ -906,7 +922,7 @@ class MutatingCnnModel(Model):
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
                 assert isinstance(node, VariableNode) and node.is_built()
-                node.mutate(session, self.optimizer, allow_node_creation=self.probabilistic_depth_strategy)
+                node.mutate(session, self.optimizer, self.node_mutate_configuration)
 
         if delete_shrinking_last_node and last_node.output_count < last_node_outputs_before and freeze_on_delete:
             # last_node.delete(session, self.optimizer)
@@ -1107,7 +1123,8 @@ class McnnModel(Model):
 
         with tf.variable_scope('full'):
             full_convolved = self._full_convolve(local_output, 3 * self.cfg.channel_count,
-                                                 self.cfg.channel_count, self.cfg.full_filter_width, self.cfg.full_pool_size)
+                                                 self.cfg.channel_count, self.cfg.full_filter_width,
+                                                 self.cfg.full_pool_size)
             sequence_length = self.cfg.pooling_factor // self.cfg.full_pool_size
             full_convolved_reshaped = tf.reshape(full_convolved, shape=(self.dynamic_batch_size, -1))
             connected = self._full_fullyconnected(full_convolved_reshaped, self.cfg.channel_count * sequence_length,
