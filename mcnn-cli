@@ -70,6 +70,8 @@ class CLI:
                                  default=1.0, help='The penalty multiplier for newly created layers.')
         base_parser.add_argument('--minimum-outputs', dest='minimum_outputs', type=int, default=10,
                                  help='The minimum outputs a layer requires to not be deleted.')
+        base_parser.add_argument('--frozen-checkps', dest='checkpoints_after_frozen', type=int, default=0,
+                                 help='Number of steps in checkpoints after architecture is frozen.')
         return base_parser
 
     def _add_training_parser(self):
@@ -126,6 +128,7 @@ class CLI:
                 ('input-dropout', parsed.input_dropout_keep_prob),
                 ('new-l-penalty-m', parsed.new_layer_penalty_multiplier),
                 ('min-outputs', parsed.minimum_outputs),
+                ('frozen-checkps', parsed.checkpoints_after_frozen),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

@@ -100,7 +100,8 @@ def train(options):
                                 only_switches_lr=options.only_switches_learning_rate,
                                 summary_every_step=options.summary_every_step,
                                 freeze_on_delete=options.freeze_on_delete,
-                                delete_shrinking_last_node=options.delete_shrinking_last_node)
+                                delete_shrinking_last_node=options.delete_shrinking_last_node,
+                                checkpoints_after_frozen=options.checkpoints_after_frozen)
 
     if options.write_result_file is not None:
         accuracy = _evaluate_with_result(options)
