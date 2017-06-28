@@ -66,6 +66,8 @@ class CLI:
                                  metavar='KEEP_PROB', type=float, default=0.0,
                                  help='Enable dropout on input with the given keep probability. '
                                       'Set to 0 to disable. Default is disabled.')
+        base_parser.add_argument('--new-layer-penalty-multiplier', dest='new_layer_penalty_multiplier', type=float,
+                                 default=1.0, help='The penalty multiplier for newly created layers.')
         return base_parser
 
     def _add_training_parser(self):
@@ -120,6 +122,7 @@ class CLI:
                 ('penalty-factor', parsed.penalty_factor),
                 ('dropout', parsed.dropout_keep_prob),
                 ('input-dropout', parsed.input_dropout_keep_prob),
+                ('new-l-penalty-m', parsed.new_layer_penalty_multiplier),
             ]
             params_str = '_'.join('{}={}'.format(k, v) for k, v in params)
             parsed.run_name = params_str

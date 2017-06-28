@@ -395,6 +395,7 @@ class VariableNode(Node):
         super().__init__(parents)
         self.can_mutate = True
         self.non_linearity = non_linearity
+        self.penalty_multiplier = 1
 
     # noinspection PyAttributeOutsideInit
     def reset(self):
@@ -424,6 +425,7 @@ class VariableNode(Node):
         self._output_count = state['output_count']
         self.can_mutate = state['can_mutate']
         self.non_linearity = state['non_linearity']
+        self.penalty_multiplier = 1
         self.reset()
 
     def mutate(self, session: tf.Session, optimizer: tf.train.Optimizer, allow_node_creation: bool):
@@ -759,6 +761,8 @@ class VariableNode(Node):
                     self._penalty *= 2 ** self.max_depth
                 elif configuration.depth_penalty != 'none':
                     raise ValueError('Unknown depth penalty {}'.format(configuration.depth_penalty))
+                if self.penalty_multiplier != 1:
+                    self._penalty *= self.penalty_multiplier
 
             tf.summary.scalar('depth', self.max_depth)
             tf.summary.histogram('abs_scale', tf.abs(scale))
@@ -840,12 +844,13 @@ class ConvNode(VariableNode):
         else:
             super().grow(session, optimizer, allow_node_creation)
 
-    def create_new_node(self, session: tf.Session, optimizer: tf.train.Optimizer):
+    def create_new_node(self, session: tf.Session, optimizer: tf.train.Optimizer) -> 'ConvNode':
         old_children = list(self.children)
         new_conv = ConvNode([self])
         for child in old_children:
             child.add_parent(new_conv)
         new_conv._notify_output_addition(session, optimizer, new_conv.output_count)
+        return new_conv
 
     def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
         channels_in = input_tensor.get_shape()[-1]
@@ -860,7 +865,7 @@ class MutatingCnnModel(Model):
     VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, penalty_factor: float,
+                 checkpoint_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
                  probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None):
 
@@ -884,6 +889,7 @@ class MutatingCnnModel(Model):
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
         self.architecture_frozen = False
         self.penalty_factor = penalty_factor
+        self.new_layer_penalty_multiplier = new_layer_penalty_multiplier
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
@@ -915,7 +921,9 @@ class MutatingCnnModel(Model):
 
         if last_node_majority_used:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
-            last_node.create_new_node(session, self.optimizer)
+            last_node.penalty_multiplier = 1
+            new_node = last_node.create_new_node(session, self.optimizer)
+            new_node.penalty_multiplier = self.new_layer_penalty_multiplier
 
     def _add_node_in_equilibrium(self, session: tf.Session):
         nodes = self.input_node.all_descendants()

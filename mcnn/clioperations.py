@@ -38,6 +38,7 @@ def create_mutating_cnn(dataset: Dataset, options) -> MutatingCnnModel:
                              sample_length=dataset.sample_length,
                              checkpoint_dir=options.checkpoint_dir,
                              penalty_factor=options.penalty_factor,
+                             new_layer_penalty_multiplier=options.new_layer_penalty_multiplier,
                              global_avg_pool=options.global_avg_pool,
                              node_build_configuration=NodeBuildConfiguration.from_options(options))
     return model
