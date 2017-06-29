@@ -101,7 +101,8 @@ def train(options):
                                 summary_every_step=options.summary_every_step,
                                 freeze_on_delete=options.freeze_on_delete,
                                 delete_shrinking_last_node=options.delete_shrinking_last_node,
-                                checkpoints_after_frozen=options.checkpoints_after_frozen)
+                                checkpoints_after_frozen=options.checkpoints_after_frozen,
+                                freeze_on_shrinking_total_outputs=options.freeze_on_shrinking_total_outputs)
 
     if options.write_result_file is not None:
         accuracy = _evaluate_with_result(options)

@@ -91,6 +91,9 @@ class CLI:
                                      help='Whether to delete the previous run before starting this one.')
         training_parser.add_argument('--delete-shrinking', dest='delete_shrinking_last_node', action='store_true',
                                      help='Whether to delete the deepest node when it is shrinking.')
+        training_parser.add_argument('--freeze-on-total-shrinking', dest='freeze_on_shrinking_total_outputs',
+                                     action='store_true',
+                                     help='Whether to freeze architecture when total number of outputs falls again.')
         self._extend_training_and_eval_options(training_parser)
 
     @staticmethod

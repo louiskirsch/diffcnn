@@ -157,7 +157,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                      plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
                      checkpoint_written_callback: Callable, render_graph_steps: int,
                      train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
-                     delete_shrinking_last_node: bool, only_switches_lr: float, checkpoints_after_frozen: int):
+                     delete_shrinking_last_node: bool, only_switches_lr: float, checkpoints_after_frozen: int,
+                     freeze_on_shrinking_total_outputs: bool):
 
     checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
 
@@ -210,7 +211,8 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                         checkpoint_written_callback()
 
                     architecture_frozen_previously = model.architecture_frozen
-                    model.mutate(session, freeze_on_delete, delete_shrinking_last_node)
+                    model.mutate(session, freeze_on_delete, delete_shrinking_last_node,
+                                 freeze_on_shrinking_total_outputs)
                     logging.info('Model mutated')
                     if model.architecture_frozen and not architecture_frozen_previously:
                         # Stop training soon

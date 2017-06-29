@@ -909,7 +909,8 @@ class MutatingCnnModel(Model):
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
-    def mutate(self, session: tf.Session, freeze_on_delete: bool, delete_shrinking_last_node: bool):
+    def mutate(self, session: tf.Session, freeze_on_delete: bool, delete_shrinking_last_node: bool,
+               freeze_on_shrinking_total_outputs: bool):
         if self.architecture_frozen:
             return
 
@@ -917,6 +918,7 @@ class MutatingCnnModel(Model):
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         last_node = self.max_depth_mutatable_conv_node
         last_node_outputs_before = last_node.output_count
+        total_outputs_before = self.total_output_count
 
         with tf.variable_scope(self._nodes_scope):
             for node in variable_nodes:
@@ -924,7 +926,10 @@ class MutatingCnnModel(Model):
                 node.mutate(session, self.optimizer, self.node_mutate_configuration)
 
         if delete_shrinking_last_node and last_node.output_count < last_node_outputs_before and freeze_on_delete:
-            # last_node.delete(session, self.optimizer)
+            self.architecture_frozen = True
+            return
+
+        if freeze_on_shrinking_total_outputs and self.total_output_count <= total_outputs_before:
             self.architecture_frozen = True
             return
 
@@ -1035,6 +1040,10 @@ class MutatingCnnModel(Model):
                 render_file = render_file.with_name(render_file.stem)
             graph.render(str(render_file), cleanup=True)
 
+    @property
+    def total_output_count(self) -> int:
+        return sum(n.output_count for n in self.input_node.all_descendants())
+
     def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
         self.is_training = tf.placeholder(tf.bool, name='is_training')
         self.dropout_enabled = tf.placeholder(tf.bool, name='dropout_enabled')
@@ -1057,7 +1066,7 @@ class MutatingCnnModel(Model):
         nodes = self.input_node.all_descendants()
         tf.summary.scalar('node_count', len(nodes))
         tf.summary.scalar('max_depth', self.terminus_node.max_depth)
-        tf.summary.scalar('total_output_count', sum(n.output_count for n in nodes))
+        tf.summary.scalar('total_output_count', self.total_output_count)
 
         logits = tf.identity(output, name='logits')
 
