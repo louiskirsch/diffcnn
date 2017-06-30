@@ -185,6 +185,7 @@ class NodeBuildConfiguration:
         self.const_neuron_deletion_threshold = 0.0
         self.dropout_keep_prob = 0.5
         self.input_dropout_keep_prob = 0.0
+        self.verbose_summary = False
 
     @classmethod
     def from_options(cls, options) -> 'NodeBuildConfiguration':
@@ -194,6 +195,7 @@ class NodeBuildConfiguration:
         config.const_neuron_deletion_threshold = options.neuron_deletion_threshold
         config.dropout_keep_prob = options.dropout_keep_prob
         config.input_dropout_keep_prob = options.input_dropout_keep_prob
+        config.verbose_summary = options.verbose_summary
         return config
 
 
@@ -710,7 +712,8 @@ class VariableNode(Node):
         # Tensorflow does not infer shape right when shapes of scales change
         abs_scales._shape = tf.TensorShape([None])
 
-        tf.summary.histogram('abs_scales', abs_scales)
+        if configuration.verbose_summary:
+            tf.summary.histogram('abs_scales', abs_scales)
 
         if configuration.const_neuron_deletion_threshold > 0:
             deletion_threshold = tf.constant(configuration.const_neuron_deletion_threshold)
@@ -778,8 +781,9 @@ class VariableNode(Node):
                 if self.penalty_multiplier != 1:
                     self._penalty *= self.penalty_multiplier
 
-            tf.summary.scalar('depth', self.max_depth)
-            tf.summary.histogram('abs_scale', tf.abs(scale))
+            if configuration.verbose_summary:
+                tf.summary.scalar('depth', self.max_depth)
+                tf.summary.histogram('abs_scale', tf.abs(scale))
 
         self._filter_var = weight
         self._bias_var = bias
@@ -981,13 +985,16 @@ class MutatingCnnModel(Model):
         return self.cross_entropy + reg_penalty
 
     def _define_training(self):
+        verbose_summary = self.node_build_configuration.verbose_summary
         scales = tf.get_collection(VariableNode.SCALE_COLLECTION)
         self.scales = tf.concat(scales, axis=0)
-        self._track_scales_diff()
+        if verbose_summary:
+            self._track_scales_diff()
 
         super()._define_training()
 
-        self._track_scales_gradient(scales)
+        if verbose_summary:
+            self._track_scales_gradient(scales)
         self._define_other_optimizations(scales)
 
     def _define_other_optimizations(self, scales: List[tf.Variable]):

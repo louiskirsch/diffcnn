@@ -76,6 +76,8 @@ class CLI:
                                  help='Whether to z-normalize data using training mean and std.')
         base_parser.add_argument('--fcn', dest='use_fcn_architecture', action='store_true',
                                  help='Use the fixed FCN architecture instead of the mutating CNN.')
+        base_parser.add_argument('--verbose-summary', dest='verbose_summary', action='store_true',
+                                 help='Whether to generate additional summaries.')
         return base_parser
 
     def _add_training_parser(self):
