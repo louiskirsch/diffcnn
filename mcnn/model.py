@@ -820,13 +820,14 @@ class FullyConnectedNode(VariableNode):
 
 class ConvNode(VariableNode):
 
-    FILTER_WIDTH = 16
     NEW_NODE_PROBABILITY = 0.1
 
-    def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True):
+    def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True,
+                 stride: int = None, kernel_size: int = 16):
         super().__init__(parents, non_linearity)
         self.can_mutate = fixed_output_channel_count is None
-        self.stride = random.randint(1, 2)
+        self.stride = stride or random.randint(1, 2)
+        self.kernel_size = kernel_size
         self._output_count = fixed_output_channel_count or self.INITIAL_OUTPUT_COUNT
 
     @property
@@ -844,12 +845,14 @@ class ConvNode(VariableNode):
         s = super().__getstate__()
         s.update({
             'stride': self.stride,
+            'kernel_size': self.kernel_size,
         })
         return s
 
     def __setstate__(self, state):
         super().__setstate__(state)
         self.stride = state['stride']
+        self.kernel_size = state['kernel_size']
 
     def grow(self, session: tf.Session, optimizer: tf.train.Optimizer, config: NodeMutationConfiguration):
         create_probabilistically = random.random() < self.NEW_NODE_PROBABILITY
@@ -868,7 +871,7 @@ class ConvNode(VariableNode):
 
     def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
         channels_in = input_tensor.get_shape()[-1]
-        return [1, self.FILTER_WIDTH, channels_in, self._output_count]
+        return [1, self.kernel_size, channels_in, self._output_count]
 
     def _apply_op(self, input_tensor: tf.Tensor, weight: tf.Tensor) -> tf.Tensor:
         return tf.nn.conv2d(input_tensor, weight, strides=[1, 1, self.stride, 1], padding='SAME')
@@ -1100,6 +1103,48 @@ class MutatingCnnModel(Model):
             return self._extract_summary(results, session)
 
         return results
+
+
+class FCNModel(Model):
+
+    def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int):
+
+        self.input_node = InputNode()
+        self.input_node.uuid = '1'
+        node = ConvNode([self.input_node], fixed_output_channel_count=128, kernel_size=8)
+        node.uuid = '2'
+        node = ConvNode([node], fixed_output_channel_count=256, stride=1, kernel_size=5)
+        node.uuid = '3'
+        self.terminus_node = ConvNode([node], fixed_output_channel_count=128, stride=1, kernel_size=3)
+        self.terminus_node.uuid = '4'
+
+        super().__init__(sample_length, learning_rate, num_classes, batch_size)
+
+    def _create_network(self, input_2d: tf.Tensor) -> tf.Tensor:
+        self.is_training = tf.placeholder(tf.bool, name='is_training')
+        config = NodeBuildConfiguration()
+        config.is_training = self.is_training
+        config.dropout_enabled = tf.constant(False, dtype=tf.bool)
+
+        with tf.variable_scope('nodes'):
+            self.input_node.build_dag(input_2d, config)
+            output = self.terminus_node.output_tensor
+            assert isinstance(output, tf.Tensor)
+
+        output_shape = output.get_shape().as_list()
+        ksize = [1] + output_shape[1:3] + [1]
+        output = tf.nn.avg_pool(output, ksize=ksize, strides=ksize, padding='VALID')
+        output = tf.squeeze(output, axis=[1, 2])
+        output = self._full_fullyconnected(output, output_shape[-1], self.num_classes)
+
+        logits = tf.identity(output, name='logits')
+
+        return logits
+
+    def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
+             update_summary=False):
+        feed_dict[self.is_training] = train
+        return super().step(session, feed_dict, loss, train, logits, correct_count, update_summary)
 
 
 class McnnModel(Model):

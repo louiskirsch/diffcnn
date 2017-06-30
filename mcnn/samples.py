@@ -97,12 +97,22 @@ class AugmentedDataset(Dataset):
 
 class HorizontalDataset(Dataset):
 
-    def __init__(self, dataset_train_path: Path, dataset_test_path: Path):
+    def __init__(self, dataset_train_path: Path, dataset_test_path: Path, z_normalize: bool = False):
         self.df_train = pd.read_csv(dataset_train_path, header=None)
         self.df_test = pd.read_csv(dataset_test_path, header=None)
         self.target_classes = self.df_train[0].unique()
         self.class_to_id = dict((c, id) for id, c in enumerate(self.target_classes))
         self._target_classes_count = len(self.target_classes)
+        if z_normalize:
+            self._z_normalize()
+
+    def _z_normalize(self):
+        train_values = self.df_train.ix[:, 1:]
+        test_values = self.df_test.ix[:, 1:]
+        train_mean = np.mean(train_values)
+        train_std = np.std(train_values)
+        self.df_train.ix[:, 1:] = (train_values - train_mean) / train_std
+        self.df_test.ix[:, 1:] = (test_values - train_mean) / train_std
 
     @property
     def sample_length(self):

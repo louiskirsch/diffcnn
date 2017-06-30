@@ -72,6 +72,10 @@ class CLI:
                                  help='The minimum outputs a layer requires to not be deleted.')
         base_parser.add_argument('--frozen-checkps', dest='checkpoints_after_frozen', type=int, default=0,
                                  help='Number of steps in checkpoints after architecture is frozen.')
+        base_parser.add_argument('--z-normalize', dest='z_normalize', action='store_true',
+                                 help='Whether to z-normalize data using training mean and std.')
+        base_parser.add_argument('--fcn', dest='use_fcn_architecture', action='store_true',
+                                 help='Use the fixed FCN architecture instead of the mutating CNN.')
         return base_parser
 
     def _add_training_parser(self):

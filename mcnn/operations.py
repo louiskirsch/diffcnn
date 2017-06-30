@@ -123,7 +123,7 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_
 
 
 def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-          steps_per_checkpoint: int, feature_name: str, save: bool = True):
+          steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable, save: bool = True):
 
     with create_session() as session:
 
@@ -149,6 +149,9 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                 if save:
                     model.save(session, checkpoint_dir)
                     logging.info('Model saved')
+                    if checkpoint_written_callback is not None:
+                        # noinspection PyCallingNonCallable
+                        checkpoint_written_callback()
             else:
                 model.step(session, feed_dict, train=True)
 
