@@ -236,7 +236,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     model.learning_rate: plateau_reducer.learning_rate
                 }
                 train_only_switches = not model.architecture_frozen and \
-                                      float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
+                                      (0.5 - train_only_switches_fraction / 2) * iterate_step_count \
+                                      <= float(step) < \
+                                      (0.5 + train_only_switches_fraction / 2) * iterate_step_count
                 if train_only_switches:
                     feed_dict[model.learning_rate] = only_switches_lr
                 if step < iterate_step_count - 1:
