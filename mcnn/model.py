@@ -795,10 +795,9 @@ class VariableNode(Node):
 
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
-
-            if configuration.dropout_keep_prob:
-                dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
-                output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
+                if configuration.dropout_keep_prob:
+                    dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
+                    output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
 
             if configuration.verbose_summary:
                 tf.summary.scalar('depth', self.max_depth)
