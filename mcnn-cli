@@ -39,8 +39,8 @@ class CLI:
                                  help='Log directory to log the runs in.')
         base_parser.add_argument('--plot-dir', dest='plot_dir', type=str, default='plots',
                                  help='Directory to store additional plots in.')
-        base_parser.add_argument('--global-avg-pool', dest='global_avg_pool', type=bool, default=True,
-                                 help='Use global average pooling instead of fully connected layers.')
+        base_parser.add_argument('--no-fully-connected', dest='use_fully_connected', action='store_false',
+                                 help='Do not add a fully connected layer before the softmax.')
         base_parser.add_argument('--depth-penalty', dest='depth_penalty', choices=['exponential', 'linear', 'none'],
                                  default='none', help='The depth penalty to apply.')
         # Miconi paper used linear
@@ -126,7 +126,7 @@ class CLI:
         if parsed.run_name is None:
             params = [
                 ('depth-penalty', parsed.depth_penalty),
-                ('gavg-pool', parsed.global_avg_pool),
+                ('full-layer', parsed.use_fully_connected),
                 ('lr', parsed.learning_rate),
                 ('del-thres', parsed.neuron_deletion_threshold),
                 ('penalty-fnc', parsed.penalty_fnc),

@@ -1,3 +1,4 @@
+from collections import deque
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -122,8 +123,42 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_
         plt.close()
 
 
+class ReduceLROnPlateau:
+
+    def __init__(self, initial_learning_rate: float, factor: float = 0.5, patience: int = 50,
+                 min_lr: float = 1e-4, threshold_epsilon: float = 1e-4):
+        self.learning_rate = initial_learning_rate
+        self.factor = factor
+        self.patience = patience
+        self.min_lr = min_lr
+        self.threshold_epsilon = threshold_epsilon
+        self.lr_epsilon = self.min_lr * 1e-4
+        self.best = None
+        self.wait = 0
+
+    def update(self, loss: float):
+        # TODO actually we should store the learning rate in a tf variable to reuse on restart
+        if self.learning_rate < self.min_lr + self.lr_epsilon:
+            return
+        if self.best is not None:
+            if loss < self.best - self.threshold_epsilon:
+                self.best = loss
+                self.wait = 0
+            else:
+                if self.wait >= self.patience:
+                    new_lr = self.learning_rate * self.factor
+                    new_lr = max(new_lr, self.min_lr)
+                    logging.info('Setting learning rate to {}'.format(new_lr))
+                    self.learning_rate = new_lr
+                    self.wait = 0
+                self.wait += 1
+        else:
+            self.best = loss
+
+
 def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-          steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable, save: bool = True):
+          steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
+          summary_every_step: bool, save: bool = True):
 
     with create_session() as session:
 
@@ -134,12 +169,15 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                                                         sample_length=model.sample_length, loop=True)
         train_sample_iterator = iter(train_sample_generator)
 
+        plateau_reducer = ReduceLROnPlateau(model.default_learning_rate)
+
         for train_step in range(step_count):
             is_checkpoint_step = (train_step + 1) % steps_per_checkpoint == 0
             input, labels = next(train_sample_iterator)
             feed_dict = {
                 model.input: input,
-                model.labels: labels
+                model.labels: labels,
+                model.learning_rate: plateau_reducer.learning_rate
             }
             if is_checkpoint_step:
                 global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
@@ -153,7 +191,11 @@ def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path,
                         # noinspection PyCallingNonCallable
                         checkpoint_written_callback()
             else:
-                model.step(session, feed_dict, train=True)
+                global_step, loss, _ = model.step(session, feed_dict, loss=True, train=True,
+                                                  update_summary=summary_every_step)
+            # Run roughly every epoch
+            if train_step % (dataset.train_sample_count // model.batch_size) == 0:
+                plateau_reducer.update(loss)
 
 
 def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
@@ -173,6 +215,7 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                                                     sample_length=model.sample_length, loop=True)
     train_sample_iterator = iter(train_sample_generator)
 
+    plateau_reducer = ReduceLROnPlateau(model.default_learning_rate)
     graph_file = plot_dir / 'graph.png'
     steps_left = step_count
 
@@ -189,16 +232,18 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                 input, labels = next(train_sample_iterator)
                 feed_dict = {
                     model.input: input,
-                    model.labels: labels
+                    model.labels: labels,
+                    model.learning_rate: plateau_reducer.learning_rate
                 }
                 train_only_switches = not model.architecture_frozen and \
                                       float(step) >= (1 - train_only_switches_fraction) * iterate_step_count
                 if train_only_switches:
                     feed_dict[model.learning_rate] = only_switches_lr
                 if step < iterate_step_count - 1:
-                    global_step, _ = model.step(session, feed_dict, train=True, update_summary=summary_every_step,
-                                                train_switches=train_only_switches,
-                                                train_wo_penalty=model.architecture_frozen)
+                    global_step, loss, _ = model.step(session, feed_dict, loss=True, train=True,
+                                                      update_summary=summary_every_step,
+                                                      train_switches=train_only_switches,
+                                                      train_wo_penalty=model.architecture_frozen)
                 else:
                     global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
                                                                      correct_count=True, update_summary=True,
@@ -229,6 +274,9 @@ def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int,
                     img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
                     summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
                     model.summary_writer.add_summary(summary, global_step)
+                # Run roughly every epoch
+                if global_step % (dataset.train_sample_count // model.batch_size) == 0:
+                    plateau_reducer.update(loss)
 
         model.build()
         logging.info('Model rebuilt')

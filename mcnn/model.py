@@ -406,10 +406,11 @@ class VariableNode(Node):
 
     INITIAL_OUTPUT_COUNT = 16
 
-    def __init__(self, parents: List, non_linearity: bool = True):
+    def __init__(self, parents: List, non_linearity: bool = True, force_batch_normalize: bool = False):
         super().__init__(parents)
         self.can_mutate = True
         self.non_linearity = non_linearity
+        self.force_batch_normalize = force_batch_normalize
         self.penalty_multiplier = 1
 
     # noinspection PyAttributeOutsideInit
@@ -431,6 +432,7 @@ class VariableNode(Node):
         s.update({
             'can_mutate': self.can_mutate,
             'non_linearity': self.non_linearity,
+            'force_batch_normalize': self.force_batch_normalize,
             'output_count': self._output_count
         })
         return s
@@ -440,6 +442,7 @@ class VariableNode(Node):
         self._output_count = state['output_count']
         self.can_mutate = state['can_mutate']
         self.non_linearity = state['non_linearity']
+        self.force_batch_normalize = state['force_batch_normalize']
         self.penalty_multiplier = 1
         self.reset()
 
@@ -543,14 +546,12 @@ class VariableNode(Node):
 
     def str_node_properties(self, session: tf.Session) -> List[Tuple[str, str]]:
         properties = super().str_node_properties(session)
-        if self._scope is not None:
+        if self.penalty is not None:
             # TODO don't access via name
             penalty_sum = session.graph.get_tensor_by_name('training/penalty_sum:0')
-            if self.penalty is not None:
-                properties.append(('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)))
-            properties.extend([
-                ('below_thres_count', self._below_del_threshold_count.eval(session=session))
-            ])
+            properties.append(('penalty-contrib', '{:.2f}%'.format(session.run(self.penalty / penalty_sum) * 100)))
+        if self._below_del_threshold_count is not None:
+            properties.append(('below_thres_count', self._below_del_threshold_count.eval(session=session)))
         return properties
 
     @property
@@ -696,6 +697,9 @@ class VariableNode(Node):
         raise NotImplementedError()
 
     def _post_build(self, configuration: NodeBuildConfiguration, post_build_tensors: Dict[str, tf.Tensor]):
+        if not self.can_mutate:
+            return
+
         if 'deletion_threshold' not in post_build_tensors:
             post_build_tensors['deletion_threshold'] = self._calc_deletion_threshold(configuration)
         deletion_threshold = post_build_tensors['deletion_threshold']
@@ -741,20 +745,54 @@ class VariableNode(Node):
                                      initializer=xavier_initializer())
             bias = tf.get_variable('bias', shape=(self._output_count,), dtype=tf.float32,
                                    initializer=tf.constant_initializer(0.0))
-            scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
-                                    initializer=tf.constant_initializer(1.0))
-            tf.add_to_collection(self.SCALE_COLLECTION, scale)
 
             output = self._apply_op(input_tensor, weight)
 
-            ema = tf.train.ExponentialMovingAverage(decay=0.9, name='moving_averages')
-            batch_mean, batch_variance = tf.nn.moments(output, axes=list(range(len(weight_shape) - 1)), name='moments')
-            update_ema = ema.apply([batch_mean, batch_variance])
-            tf.add_to_collection(Model.POST_TRAINING_UPDATE_COLLECTION, update_ema)
-            mean = tf.cond(configuration.is_training, lambda: batch_mean, lambda: ema.average(batch_mean))
-            variance = tf.cond(configuration.is_training, lambda: batch_variance, lambda: ema.average(batch_variance))
+            if self.can_mutate or self.force_batch_normalize:
+                scale = tf.get_variable('scale', shape=(self._output_count,), dtype=tf.float32,
+                                        initializer=tf.constant_initializer(1.0))
+                tf.add_to_collection(self.SCALE_COLLECTION, scale)
 
-            output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-8, name='batch_norm')
+                ema = tf.train.ExponentialMovingAverage(decay=0.99, name='moving_averages')
+                batch_mean, batch_variance = tf.nn.moments(output,
+                                                           axes=list(range(len(weight_shape) - 1)),
+                                                           name='moments')
+                update_ema = ema.apply([batch_mean, batch_variance])
+                tf.add_to_collection(Model.POST_TRAINING_UPDATE_COLLECTION, update_ema)
+                mean = tf.cond(configuration.is_training,
+                               lambda: batch_mean,
+                               lambda: ema.average(batch_mean))
+                variance = tf.cond(configuration.is_training,
+                                   lambda: batch_variance,
+                                   lambda: ema.average(batch_variance))
+
+                output = tf.nn.batch_normalization(output, mean, variance, bias, scale, 1e-3, name='batch_norm')
+
+                # Calculate Weigend et al. 1990 regularizer
+                if self.can_mutate:
+                    if configuration.penalty_type == 'weigend':
+                        squared_scales = tf.square(scale)
+                        self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
+                    elif configuration.penalty_type == 'linear':
+                        self._penalty_per_output = tf.abs(scale)
+                    else:
+                        raise ValueError('Unknown penalty type {}'.format(configuration.penalty_type))
+                    self._penalty = tf.reduce_sum(self._penalty_per_output)
+                    if configuration.depth_penalty == 'linear':
+                        self._penalty *= self.max_depth
+                    elif configuration.depth_penalty == 'exponential':
+                        self._penalty *= 2 ** self.max_depth
+                    elif configuration.depth_penalty != 'none':
+                        raise ValueError('Unknown depth penalty {}'.format(configuration.depth_penalty))
+                    if self.penalty_multiplier != 1:
+                        self._penalty *= self.penalty_multiplier
+
+                self._scale_var = scale
+                self._ema_mean_var = ema.average(batch_mean)
+                self._ema_variance_var = ema.average(batch_variance)
+            else:
+                output = tf.nn.bias_add(output, bias, name='add_bias')
+
             if self.non_linearity:
                 output = tf.nn.relu(output, name='activation')
 
@@ -762,34 +800,13 @@ class VariableNode(Node):
                 dropped = tf.nn.dropout(output, configuration.dropout_keep_prob)
                 output = tf.cond(configuration.dropout_enabled, lambda: dropped, lambda: output)
 
-            if self.can_mutate:
-                # Calculate Weigend et al. 1990 regularizer
-                if configuration.penalty_type == 'weigend':
-                    squared_scales = tf.square(scale)
-                    self._penalty_per_output = squared_scales / (1e-1 + squared_scales)
-                elif configuration.penalty_type == 'linear':
-                    self._penalty_per_output = tf.abs(scale)
-                else:
-                    raise ValueError('Unknown penalty type {}'.format(configuration.penalty_type))
-                self._penalty = tf.reduce_sum(self._penalty_per_output)
-                if configuration.depth_penalty == 'linear':
-                    self._penalty *= self.max_depth
-                elif configuration.depth_penalty == 'exponential':
-                    self._penalty *= 2 ** self.max_depth
-                elif configuration.depth_penalty != 'none':
-                    raise ValueError('Unknown depth penalty {}'.format(configuration.depth_penalty))
-                if self.penalty_multiplier != 1:
-                    self._penalty *= self.penalty_multiplier
-
             if configuration.verbose_summary:
                 tf.summary.scalar('depth', self.max_depth)
-                tf.summary.histogram('abs_scale', tf.abs(scale))
+                if self._scale_var is not None:
+                    tf.summary.histogram('abs_scale', tf.abs(self._scale_var))
 
         self._filter_var = weight
         self._bias_var = bias
-        self._scale_var = scale
-        self._ema_mean_var = ema.average(batch_mean)
-        self._ema_variance_var = ema.average(batch_variance)
         self.output_tensor = output
         return output
 
@@ -806,12 +823,9 @@ class FullyConnectedNode(VariableNode):
         return 'fullyconnected_node'
 
     def _shape_input(self, input_tensor: tf.Tensor) -> tf.Tensor:
-        # Pool and reshape if not compatible
+        # Apply global average pooling if not compatible
         if input_tensor.get_shape().ndims > 2:
-            # TODO maxpool instead?
-            input_tensor = tf.reduce_max(input_tensor, axis=2, keep_dims=True)
-            filter_count = input_tensor.get_shape().as_list()[-1]
-            input_tensor = tf.reshape(input_tensor, shape=(-1, filter_count))
+            input_tensor = tf.reduce_mean(input_tensor, axis=[1, 2])
         return input_tensor
 
     def get_weight_shape(self, input_tensor: tf.Tensor) -> List[int]:
@@ -827,10 +841,10 @@ class ConvNode(VariableNode):
     NEW_NODE_PROBABILITY = 0.1
 
     def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True,
-                 stride: int = None, kernel_size: int = 16):
-        super().__init__(parents, non_linearity)
+                 stride: int = None, kernel_size: int = 16, force_batch_normalize: bool = False):
+        super().__init__(parents, non_linearity, force_batch_normalize)
         self.can_mutate = fixed_output_channel_count is None
-        self.stride = stride or random.randint(1, 2)
+        self.stride = stride or 1
         self.kernel_size = kernel_size
         self._output_count = fixed_output_channel_count or self.INITIAL_OUTPUT_COUNT
 
@@ -887,7 +901,7 @@ class MutatingCnnModel(Model):
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
                  checkpoint_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
-                 probabilistic_depth_strategy: bool = False, global_avg_pool: bool = True,
+                 probabilistic_depth_strategy: bool = False, use_fully_connected: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None,
                  node_mutate_configuration: NodeMutationConfiguration = None):
 
@@ -898,9 +912,8 @@ class MutatingCnnModel(Model):
         else:
             self.input_node = InputNode()
             first_conv_node = ConvNode([self.input_node])
-            if not global_avg_pool:
-                fully_connected_node = FullyConnectedNode([first_conv_node])
-                self.terminus_node = FullyConnectedNode([fully_connected_node], fixed_output_count=num_classes,
+            if use_fully_connected:
+                self.terminus_node = FullyConnectedNode([first_conv_node], fixed_output_count=num_classes,
                                                         non_linearity=False)
             else:
                 self.terminus_node = ConvNode([first_conv_node], fixed_output_channel_count=num_classes,
@@ -1066,12 +1079,9 @@ class MutatingCnnModel(Model):
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
 
-        # Remove width and height dimensions if no fully connected layer exists
-        output_shape = output.get_shape()
-        if output_shape.ndims == 4:
-            ksize = [1] + output_shape.as_list()[1:3] + [1]
-            output = tf.nn.avg_pool(output, ksize=ksize, strides=ksize, padding='VALID')
-            output = tf.squeeze(output, axis=[1, 2])
+        # Global average pool if no fully connected layer exists
+        if output.get_shape().ndims == 4:
+            output = tf.reduce_mean(output, axis=[1, 2])
 
         nodes = self.input_node.all_descendants()
         tf.summary.scalar('node_count', len(nodes))
@@ -1118,12 +1128,15 @@ class FCNModel(Model):
 
         self.input_node = InputNode()
         self.input_node.uuid = '1'
-        node = ConvNode([self.input_node], fixed_output_channel_count=128, kernel_size=8)
+        node = ConvNode([self.input_node], fixed_output_channel_count=128, stride=1, kernel_size=8,
+                        force_batch_normalize=True)
         node.uuid = '2'
-        node = ConvNode([node], fixed_output_channel_count=256, stride=1, kernel_size=5)
+        node = ConvNode([node], fixed_output_channel_count=256, stride=1, kernel_size=5, force_batch_normalize=True)
         node.uuid = '3'
-        self.terminus_node = ConvNode([node], fixed_output_channel_count=128, stride=1, kernel_size=3)
-        self.terminus_node.uuid = '4'
+        node = ConvNode([node], fixed_output_channel_count=128, stride=1, kernel_size=3, force_batch_normalize=True)
+        node.uuid = '4'
+        self.terminus_node = FullyConnectedNode([node], fixed_output_count=num_classes, non_linearity=False)
+        self.terminus_node.uuid = '5'
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
 
@@ -1137,12 +1150,6 @@ class FCNModel(Model):
             self.input_node.build_dag(input_2d, config)
             output = self.terminus_node.output_tensor
             assert isinstance(output, tf.Tensor)
-
-        output_shape = output.get_shape().as_list()
-        ksize = [1] + output_shape[1:3] + [1]
-        output = tf.nn.avg_pool(output, ksize=ksize, strides=ksize, padding='VALID')
-        output = tf.squeeze(output, axis=[1, 2])
-        output = self._full_fullyconnected(output, output_shape[-1], self.num_classes)
 
         logits = tf.identity(output, name='logits')
 
