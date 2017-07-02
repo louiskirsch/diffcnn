@@ -88,10 +88,9 @@ class CLI:
                                      help='Number of epochs to train.')
         training_parser.add_argument('--steps-per-checkpoint', dest='steps_per_checkpoint', type=int, default=1000,
                                      help='How many training steps to do per checkpoint.')
-        training_parser.add_argument('--render-graph', dest='render_graph_steps', type=int, default=100,
-                                     help='Render the graph to pdf every n steps specified. Set to 0 to disable.')
-        training_parser.add_argument('--summary-every-step', dest='summary_every_step', action='store_true',
-                                     help='Log a tensorflow summary every training step.')
+        training_parser.add_argument('--steps-per-summary', dest='steps_per_summary', type=int, default=100,
+                                     help='Generate a tensorboard summary every n steps specified. '
+                                          'Defaults to 100.')
         training_parser.add_argument('--freeze-on-delete', dest='freeze_on_delete', action='store_true',
                                      help='Whether to freeze the architecture on node deletion.')
         training_parser.add_argument('--restart', dest='should_restart', action='store_true',

@@ -106,8 +106,8 @@ def train(options):
                                   log_dir_train=options.log_dir_train,
                                   log_dir_test=options.log_dir_test,
                                   steps_per_checkpoint=options.steps_per_checkpoint,
+                                  steps_per_summary=options.steps_per_summary,
                                   checkpoint_written_callback=None,
-                                  summary_every_step=options.summary_every_step,
                                   save=True)
     else:
         model = create_mutating_cnn(dataset, options)
@@ -118,10 +118,9 @@ def train(options):
                                              log_dir_test=options.log_dir_test,
                                              plot_dir=options.plot_dir,
                                              steps_per_checkpoint=options.steps_per_checkpoint,
-                                             render_graph_steps=options.render_graph_steps,
+                                             steps_per_summary=options.steps_per_summary,
                                              train_only_switches_fraction=options.train_only_switches_fraction,
                                              only_switches_lr=options.only_switches_learning_rate,
-                                             summary_every_step=options.summary_every_step,
                                              freeze_on_delete=options.freeze_on_delete,
                                              delete_shrinking_last_node=options.delete_shrinking_last_node,
                                              epochs_after_frozen=options.epochs_after_frozen,

@@ -178,8 +178,8 @@ class TrainingResult:
 
 
 def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path, log_dir_train: Path,
-          log_dir_test: Path, steps_per_checkpoint: int, checkpoint_written_callback: Callable,
-          summary_every_step: bool, save: bool = True) -> TrainingResult:
+          log_dir_test: Path, steps_per_checkpoint: int, steps_per_summary: int, checkpoint_written_callback: Callable,
+          save: bool = True) -> TrainingResult:
 
     batch_size = model.batch_size
     if dataset.train_sample_count:
@@ -198,17 +198,18 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
         for epoch in range(epoch_count):
             train_loss = None
             train_accuracy = None
+            is_summary_step = None
             for x, y in dataset.data_generator('train', batch_size):
                 is_checkpoint_step = (global_step + 1) % steps_per_checkpoint == 0
+                is_summary_step = (global_step + 1) % steps_per_summary == 0
                 feed_dict = {
                     model.input: x,
                     model.labels: y,
                     model.learning_rate: plateau_reducer.learning_rate
                 }
-                update_summary = is_checkpoint_step or summary_every_step
                 global_step, train_loss, _, train_accuracy = model.step(session, feed_dict, loss=True, train=True,
                                                                         accuracy=True,
-                                                                        update_summary=update_summary,
+                                                                        update_summary=is_summary_step,
                                                                         alternative_summary_writer=train_writer)
                 if is_checkpoint_step:
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, train_loss,
@@ -220,13 +221,14 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                             # noinspection PyCallingNonCallable
                             checkpoint_written_callback()
 
-                if update_summary:
+                if is_summary_step:
                     global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
                     test_writer.add_summary(test_summary, global_step)
                     result.update(train_loss, train_accuracy, test_loss, test_accuracy)
 
-            global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
-            result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+            if not is_summary_step:
+                global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
+                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
             plateau_reducer.update(train_loss)
 
         train_writer.add_graph(session.graph, global_step=global_step)
@@ -236,9 +238,8 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
 class MutationTrainer:
 
     def __init__(self, model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir_train: Path,
-                 log_dir_test: Path, plot_dir: Path, steps_per_checkpoint: int,
-                 render_graph_steps: int,
-                 train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
+                 log_dir_test: Path, plot_dir: Path, steps_per_checkpoint: int, steps_per_summary: int,
+                 train_only_switches_fraction: float, freeze_on_delete: bool,
                  delete_shrinking_last_node: bool, only_switches_lr: float, epochs_after_frozen: int,
                  freeze_on_shrinking_total_outputs: bool):
         self.model = model
@@ -249,9 +250,8 @@ class MutationTrainer:
         self.log_dir_train = log_dir_train
         self.plot_dir = plot_dir
         self.steps_per_checkpoint = steps_per_checkpoint
-        self.render_graph_steps = render_graph_steps
+        self.steps_per_summary = steps_per_summary
         self.train_only_switches_fraction = train_only_switches_fraction
-        self.summary_every_step = summary_every_step
         self.freeze_on_delete =freeze_on_delete
         self.delete_shrinking_last_node = delete_shrinking_last_node
         self.only_switches_lr = only_switches_lr
@@ -298,7 +298,8 @@ class MutationTrainer:
         logging.info('Model rebuilt')
         self._restart_session()
 
-    def _parse_summary(self, serialized: bytes) -> tf.Summary:
+    @staticmethod
+    def _parse_summary(serialized: bytes) -> tf.Summary:
         summary = tf.Summary()
         summary.ParseFromString(serialized)
         return summary
@@ -316,10 +317,10 @@ class MutationTrainer:
             self.epochs_left -= 1
             train_loss = None
             train_accuracy = None
-            test_loss = None
-            test_accuracy = None
+            is_summary_step = None
             for x, y in self.dataset.data_generator('train', self.batch_size):
                 is_checkpoint_step = (global_step + 1) % self.steps_per_checkpoint == 0
+                is_summary_step = (global_step + 1) % self.steps_per_summary == 0
                 checkpoint_progress = (global_step % self.steps_per_checkpoint) / self.steps_per_checkpoint
                 feed_dict = {
                     self.model.input: x,
@@ -333,31 +334,25 @@ class MutationTrainer:
                 if train_only_switches:
                     feed_dict[self.model.learning_rate] = self.only_switches_lr
 
-                update_summary = is_checkpoint_step or self.summary_every_step
                 step_result = self.model.step(self.session,
                                               feed_dict,
                                               loss=True,
                                               train=True,
                                               accuracy=True,
-                                              return_summary=update_summary,
+                                              return_summary=is_summary_step,
                                               alternative_summary_writer=self.train_writer,
                                               train_switches=train_only_switches,
                                               train_wo_penalty=self.model.architecture_frozen)
                 global_step, train_loss, _, train_accuracy = step_result[:4]
-                train_summary = self._parse_summary(step_result[-1]) if update_summary else None
+                train_summary = self._parse_summary(step_result[-1]) if is_summary_step else None
 
-                if self.render_graph_steps and global_step % self.render_graph_steps == 0:
+                if is_summary_step:
                     self.model.render_graph(self.session, render_file=graph_file)
                     with graph_file.open(mode='rb') as f:
                         graph_bytes = f.read()
                     img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
-                    summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
-                    if update_summary:
-                        train_summary.MergeFrom(summary)
-                    else:
-                        self.train_writer.add_summary(summary, global_step)
+                    train_summary.value.add(tag='graph_rendering', image=img_summary)
 
-                if update_summary:
                     step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                     global_step, test_loss, test_accuracy, test_summary = step_result
                     result.update(train_loss, train_accuracy, test_loss, test_accuracy)
@@ -368,7 +363,6 @@ class MutationTrainer:
                     self.train_writer.add_summary(train_summary, global_step)
                     self.test_writer.add_summary(test_summary, global_step)
 
-                if is_checkpoint_step:
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step,
                                                                                 train_loss,
                                                                                 train_accuracy * 100))
@@ -379,6 +373,7 @@ class MutationTrainer:
                                                                                 result.best_test_loss,
                                                                                 result.best_test_accuracy * 100))
 
+                if is_checkpoint_step:
                     self.model.save(self.session, self.checkpoint_dir)
                     logging.info('Model saved')
                     if checkpoint_written_callback is not None:
@@ -389,9 +384,10 @@ class MutationTrainer:
                         self._mutate()
 
             # Evaluate at end of epoch
-            step_result = _evaluate_in_session(self.session, self.model, self.dataset)
-            global_step, test_loss, test_accuracy, test_summary = step_result
-            result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+            if not is_summary_step:
+                step_result = _evaluate_in_session(self.session, self.model, self.dataset)
+                global_step, test_loss, test_accuracy, test_summary = step_result
+                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
             plateau_reducer.update(train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)
