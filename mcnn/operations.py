@@ -197,6 +197,7 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
 
         for epoch in range(epoch_count):
             train_loss = None
+            train_accuracy = None
             for x, y in dataset.data_generator('train', batch_size):
                 is_checkpoint_step = (global_step + 1) % steps_per_checkpoint == 0
                 feed_dict = {
@@ -219,11 +220,13 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                             # noinspection PyCallingNonCallable
                             checkpoint_written_callback()
 
-                global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
                 if update_summary:
+                    global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
                     test_writer.add_summary(test_summary, global_step)
-                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+                    result.update(train_loss, train_accuracy, test_loss, test_accuracy)
 
+            global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
+            result.update(train_loss, train_accuracy, test_loss, test_accuracy)
             plateau_reducer.update(train_loss)
 
         train_writer.add_graph(session.graph, global_step=global_step)
@@ -312,6 +315,9 @@ class MutationTrainer:
         while self.epochs_left > 0:
             self.epochs_left -= 1
             train_loss = None
+            train_accuracy = None
+            test_loss = None
+            test_accuracy = None
             for x, y in self.dataset.data_generator('train', self.batch_size):
                 is_checkpoint_step = (global_step + 1) % self.steps_per_checkpoint == 0
                 checkpoint_progress = (global_step % self.steps_per_checkpoint) / self.steps_per_checkpoint
@@ -340,10 +346,6 @@ class MutationTrainer:
                 global_step, train_loss, _, train_accuracy = step_result[:4]
                 train_summary = self._parse_summary(step_result[-1]) if update_summary else None
 
-                step_result = _evaluate_in_session(self.session, self.model, self.dataset)
-                global_step, test_loss, test_accuracy, test_summary = step_result
-                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
-
                 if self.render_graph_steps and global_step % self.render_graph_steps == 0:
                     self.model.render_graph(self.session, render_file=graph_file)
                     with graph_file.open(mode='rb') as f:
@@ -356,10 +358,13 @@ class MutationTrainer:
                         self.train_writer.add_summary(summary, global_step)
 
                 if update_summary:
-                    summary = tf.Summary()
-                    summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
-                    summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
-                    test_summary.MergeFrom(summary)
+                    step_result = _evaluate_in_session(self.session, self.model, self.dataset)
+                    global_step, test_loss, test_accuracy, test_summary = step_result
+                    result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+
+                    test_summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
+                    test_summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
+
                     self.train_writer.add_summary(train_summary, global_step)
                     self.test_writer.add_summary(test_summary, global_step)
 
@@ -383,6 +388,10 @@ class MutationTrainer:
                     if not self.model.architecture_frozen:
                         self._mutate()
 
+            # Evaluate at end of epoch
+            step_result = _evaluate_in_session(self.session, self.model, self.dataset)
+            global_step, test_loss, test_accuracy, test_summary = step_result
+            result.update(train_loss, train_accuracy, test_loss, test_accuracy)
             plateau_reducer.update(train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)
