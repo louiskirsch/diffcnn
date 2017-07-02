@@ -21,7 +21,7 @@ class CLI:
 
     def _create_base_parser(self):
         base_parser = argparse.ArgumentParser(add_help=False)
-        base_parser.add_argument('--batch-size', dest='batch_size', type=int, default=64,
+        base_parser.add_argument('--batch-size', dest='batch_size', type=int, default=16,
                                  help='Batch size to use.')
         base_parser.add_argument('--dataset', dest='dataset_name', type=str, default='Adiac',
                                  help='Name of dataset to use')
@@ -47,7 +47,7 @@ class CLI:
         base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
                                  default='weigend', help='The penalty function to apply.')
         # Miconi paper used 1e-4
-        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-4,
+        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-3,
                                  help='The penalty factor in the loss function.')
         # Miconi paper used 0.05
         base_parser.add_argument('--neuron-del-thres', dest='neuron_deletion_threshold', type=float, default=0.05,
@@ -59,22 +59,22 @@ class CLI:
                                       'switches.')
         base_parser.add_argument('--switches-lr', dest='only_switches_learning_rate', type=float, default=5e-2,
                                  help='The learning rate to use when only training switches.')
-        base_parser.add_argument('--dropout', dest='dropout_keep_prob', metavar='KEEP_PROB', type=float, default=0.5,
+        base_parser.add_argument('--dropout', dest='dropout_keep_prob', metavar='KEEP_PROB', type=float, default=0.0,
                                  help='Enable dropout with the given keep probability. '
-                                      'Set to 0 to disable. Default is 0.5')
+                                      'Set to 0 to disable. Default is disabled.')
         base_parser.add_argument('--input-dropout', dest='input_dropout_keep_prob',
                                  metavar='KEEP_PROB', type=float, default=0.0,
                                  help='Enable dropout on input with the given keep probability. '
                                       'Set to 0 to disable. Default is disabled.')
         base_parser.add_argument('--new-layer-penalty-multiplier', dest='new_layer_penalty_multiplier', type=float,
-                                 default=1.0, help='The penalty multiplier for newly created layers.')
-        base_parser.add_argument('--minimum-outputs', dest='minimum_outputs', type=int, default=10,
+                                 default=10.0, help='The penalty multiplier for newly created layers.')
+        base_parser.add_argument('--minimum-outputs', dest='minimum_outputs', type=int, default=1,
                                  help='The minimum outputs a layer requires to not be deleted.')
         base_parser.add_argument('--frozen-epochs', dest='epochs_after_frozen', type=int, default=-1,
                                  help='Number of steps in checkpoints after architecture is frozen. '
                                       'Set to -1 for no change in remaining epochs.')
-        base_parser.add_argument('--z-normalize', dest='z_normalize', action='store_true',
-                                 help='Whether to z-normalize data using training mean and std.')
+        base_parser.add_argument('--no-z-normalize', dest='z_normalize', action='store_false',
+                                 help='Disable z-normalization data using training mean and std.')
         base_parser.add_argument('--fcn', dest='use_fcn_architecture', action='store_true',
                                  help='Use the fixed FCN architecture instead of the mutating CNN.')
         base_parser.add_argument('--verbose-summary', dest='verbose_summary', action='store_true',
