@@ -219,6 +219,8 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
 
             plateau_reducer.update(train_loss)
+
+        train_writer.add_graph(session.graph, global_step=global_step)
     return result
 
 
@@ -287,6 +289,11 @@ class MutationTrainer:
         logging.info('Model rebuilt')
         self._restart_session()
 
+    def _parse_summary(self, serialized: bytes) -> tf.Summary:
+        summary = tf.Summary()
+        summary.ParseFromString(serialized)
+        return summary
+
     def train(self, epoch_count: int, checkpoint_written_callback: Callable = None) -> TrainingResult:
 
         result = TrainingResult()
@@ -320,20 +327,42 @@ class MutationTrainer:
                                               loss=True,
                                               train=True,
                                               accuracy=True,
-                                              update_summary=update_summary,
+                                              return_summary=update_summary,
                                               alternative_summary_writer=self.train_writer,
                                               train_switches=train_only_switches,
                                               train_wo_penalty=self.model.architecture_frozen)
-                global_step, train_loss, _, train_accuracy = step_result
+                global_step, train_loss, _, train_accuracy = step_result[:4]
+                train_summary = self._parse_summary(step_result[-1]) if update_summary else None
 
                 feed_dict[self.model.input], feed_dict[self.model.labels] = self.dataset.test_data
-                global_step, test_loss, test_accuracy = self.model.step(self.session,
-                                                                        feed_dict,
-                                                                        loss=True,
-                                                                        accuracy=True,
-                                                                        update_summary=update_summary,
-                                                                        alternative_summary_writer=self.test_writer)
+                step_result = self.model.step(self.session,
+                                              feed_dict,
+                                              loss=True,
+                                              accuracy=True,
+                                              return_summary=update_summary,
+                                              alternative_summary_writer=self.test_writer)
+                global_step, test_loss, test_accuracy = step_result[:3]
+                test_summary = self._parse_summary(step_result[-1]) if update_summary else None
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+
+                if self.render_graph_steps and global_step % self.render_graph_steps == 0:
+                    self.model.render_graph(self.session, render_file=graph_file)
+                    with graph_file.open(mode='rb') as f:
+                        graph_bytes = f.read()
+                    img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
+                    summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
+                    if update_summary:
+                        train_summary.MergeFrom(summary)
+                    else:
+                        self.train_writer.add_summary(summary, global_step)
+
+                if update_summary:
+                    summary = tf.Summary()
+                    summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
+                    summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
+                    test_summary.MergeFrom(summary)
+                    self.train_writer.add_summary(train_summary, global_step)
+                    self.test_writer.add_summary(test_summary, global_step)
 
                 if is_checkpoint_step:
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step,
@@ -355,15 +384,8 @@ class MutationTrainer:
                     if not self.model.architecture_frozen:
                         self._mutate()
 
-                if self.render_graph_steps and global_step % self.render_graph_steps == 0:
-                    self.model.render_graph(self.session, render_file=graph_file)
-                    with graph_file.open(mode='rb') as f:
-                        graph_bytes = f.read()
-                    img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
-                    summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
-                    self.train_writer.add_summary(summary, global_step)
-
             plateau_reducer.update(train_loss)
 
+        self.train_writer.add_graph(self.session.graph, global_step=global_step)
         self._close_session()
         return result

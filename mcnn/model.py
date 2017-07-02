@@ -117,7 +117,8 @@ class Model:
         saver.save(session, str(checkpoint_dir / 'mcnn'), global_step=self.global_step.eval(session))
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             accuracy=False, update_summary=False, alternative_summary_writer: tf.summary.FileWriter = None):
+             accuracy=False, update_summary=False, return_summary=False,
+             alternative_summary_writer: tf.summary.FileWriter = None):
         output_feed = [self.global_step]
         if loss:
             output_feed.append(self.loss)
@@ -129,7 +130,7 @@ class Model:
             output_feed.append(self.correct_count)
         if accuracy:
             output_feed.append(self.accuracy)
-        if update_summary:
+        if update_summary or return_summary:
             output_feed.append(self.summary)
 
         results = session.run(output_feed, feed_dict=feed_dict)
@@ -145,7 +146,6 @@ class Model:
         summary_result = results[-1]
         step = results[0]
         summary_writer.add_summary(summary_result, global_step=step)
-        summary_writer.add_graph(session.graph, global_step=step)
         return results[:-1]
 
     @classmethod
@@ -1098,7 +1098,7 @@ class MutatingCnnModel(Model):
         return logits
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             accuracy=False, update_summary=False, train_switches=False, train_wo_penalty=False,
+             accuracy=False, update_summary=False, return_summary=False, train_switches=False, train_wo_penalty=False,
              alternative_summary_writer: tf.summary.FileWriter = None):
         feed_dict[self.is_training] = train or train_switches or train_wo_penalty
         feed_dict[self.dropout_enabled] = (train or train_wo_penalty) and not train_switches
@@ -1119,7 +1119,7 @@ class MutatingCnnModel(Model):
             output_feed.append(self.correct_count)
         if accuracy:
             output_feed.append(self.accuracy)
-        if update_summary:
+        if update_summary or return_summary:
             output_feed.append(self.summary)
 
         results = session.run(output_feed, feed_dict=feed_dict)
@@ -1164,9 +1164,11 @@ class FCNModel(Model):
         return logits
 
     def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             accuracy=False, update_summary=False):
+             accuracy=False, update_summary=False, return_summary=False,
+             alternative_summary_writer: tf.summary.FileWriter = None):
         feed_dict[self.is_training] = train
-        return super().step(session, feed_dict, loss, train, logits, correct_count, accuracy, update_summary)
+        return super().step(session, feed_dict, loss, train, logits,
+                            correct_count, accuracy, update_summary, return_summary, alternative_summary_writer)
 
 
 class McnnModel(Model):
