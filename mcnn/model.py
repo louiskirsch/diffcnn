@@ -927,6 +927,7 @@ class MutatingCnnModel(Model):
         self.node_build_configuration = node_build_configuration or NodeBuildConfiguration()
         self.node_mutate_configuration = node_mutate_configuration or NodeMutationConfiguration()
         self.architecture_frozen = False
+        self.depth_frozen = False
         self.penalty_factor = penalty_factor
         self.new_layer_penalty_multiplier = new_layer_penalty_multiplier
 
@@ -956,13 +957,14 @@ class MutatingCnnModel(Model):
             self.architecture_frozen = True
             return
 
-        if freeze_on_delete:
-            nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0
-            if nodes_got_deleted:
+        nodes_got_deleted = len(nodes - self.input_node.all_descendants()) > 0
+        if nodes_got_deleted:
+            self.depth_frozen = True
+            if freeze_on_delete:
                 self.architecture_frozen = True
                 return
 
-        if last_node.output_count >= VariableNode.INITIAL_OUTPUT_COUNT:
+        if not self.depth_frozen and last_node.output_count >= VariableNode.INITIAL_OUTPUT_COUNT:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.penalty_multiplier = 1
             new_node = last_node.create_new_node(session, self.optimizer)
