@@ -1,4 +1,4 @@
-from abc import abstractmethod, abstractproperty
+from abc import abstractmethod
 from pathlib import Path
 from typing import Tuple, Iterable
 
@@ -6,31 +6,16 @@ import pandas as pd
 import numpy as np
 
 import random
-import itertools
-
-
-def batch_samples_from_callback(sample_callback, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
-    batch = [sample_callback() for _ in range(batch_size)]
-    x = np.stack((x for x, y in batch), axis=0)
-    y = np.stack((y for x, y in batch), axis=0)
-    return x, y
-
-
-def batch_generator(sample_iterator, batch_size: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
-    while True:
-        batch = list(itertools.islice(sample_iterator, batch_size))
-        if len(batch) == 0:
-            return
-        x = np.stack((x for x, y in batch), axis=0)
-        y = np.stack((y for x, y in batch), axis=0)
-        yield x, y
 
 
 class Dataset:
 
     @abstractmethod
-    def data_generator(self, dataset: str, batch_size: int, feature_name: str = None,
-                       sample_length: int = None, loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+    def data_generator(self, dataset: str, batch_size: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+        raise NotImplementedError()
+
+    @property
+    def test_data(self) -> Tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError()
 
     @property
@@ -39,7 +24,7 @@ class Dataset:
         raise NotImplementedError()
 
     @property
-    def sample_length(self):
+    def sample_length(self) -> int:
         return 0
 
     @property
@@ -84,10 +69,8 @@ class AugmentedDataset(Dataset):
         scaled = centered * scale
         return scaled + means
 
-    def data_generator(self, dataset: str, batch_size: int, feature_name: str = None, sample_length: int = None,
-                       loop: bool = False) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
-        for x, y in self.orig_dataset.data_generator(dataset=dataset, batch_size=batch_size, feature_name=feature_name,
-                                                     sample_length=sample_length, loop=loop):
+    def data_generator(self, dataset: str, batch_size: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+        for x, y in self.orig_dataset.data_generator(dataset=dataset, batch_size=batch_size):
             if self.noise:
                 x = self._add_noise(x)
             if self.scale:
@@ -101,18 +84,29 @@ class HorizontalDataset(Dataset):
         self.df_train = pd.read_csv(dataset_train_path, header=None)
         self.df_test = pd.read_csv(dataset_test_path, header=None)
         self.target_classes = self.df_train[0].unique()
-        self.class_to_id = dict((c, id) for id, c in enumerate(self.target_classes))
         self._target_classes_count = len(self.target_classes)
+        self._normalize_classes(self.df_train)
+        self._normalize_classes(self.df_test)
         if z_normalize:
             self._z_normalize()
 
     def _z_normalize(self):
         train_values = self.df_train.ix[:, 1:]
         test_values = self.df_test.ix[:, 1:]
-        train_mean = np.mean(train_values)
-        train_std = np.std(train_values)
+        train_mean = np.mean(train_values.values)
+        train_std = np.std(train_values.values)
         self.df_train.ix[:, 1:] = (train_values - train_mean) / train_std
         self.df_test.ix[:, 1:] = (test_values - train_mean) / train_std
+
+    def _normalize_classes(self, df: pd.DataFrame):
+        class_to_id = dict((c, id) for id, c in enumerate(self.target_classes))
+        df[0].replace(class_to_id, inplace=True)
+
+    @property
+    def test_data(self):
+        x = self.df_test.ix[:, 1:]
+        y = self.df_test.ix[:, 0]
+        return x, y
 
     @property
     def sample_length(self):
@@ -130,39 +124,16 @@ class HorizontalDataset(Dataset):
     def target_classes_count(self):
         return self._target_classes_count
 
-    def _generate_samples(self, dataset: pd.DataFrame, loop: bool) -> Tuple[np.ndarray, int]:
-        row_count = dataset.shape[0]
-        while True:
-            for row_index in np.random.permutation(row_count):
-                x = dataset.iloc[row_index, 1:].values
-                y = self.class_to_id[dataset.iloc[row_index, 0]]
-                yield x, y
-            if not loop:
-                return
-
-    def _generate_samples_with_offset(self, dataset: pd.DataFrame, sample_length: int,
-                                      loop: bool) -> Tuple[np.ndarray, int]:
-        row_count = dataset.shape[0]
-        offset_count = self.sample_length - sample_length + 1
-        samples_spec = list(itertools.product(range(row_count), range(offset_count)))
-        while True:
-            random.shuffle(samples_spec)
-            for row_index, offset in samples_spec:
-                start = 1 + offset
-                end = start + sample_length
-                x = dataset.iloc[row_index, start:end].values
-                y = self.class_to_id[dataset.iloc[row_index, 0]]
-                yield x, y
-            if not loop:
-                return
-
-    def data_generator(self, dataset: str, batch_size: int, sample_length: int = None,
-                       loop: bool = False, **kwargs) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
+    def data_generator(self, dataset: str, batch_size: int) -> Iterable[Tuple[np.ndarray, np.ndarray]]:
         dataset = self.df_train if dataset == 'train' else self.df_test
-        if sample_length is None or self.sample_length == sample_length:
-            yield from batch_generator(self._generate_samples(dataset, loop), batch_size)
-        else:
-            yield from batch_generator(self._generate_samples_with_offset(dataset, sample_length, loop), batch_size)
+        sample_count = dataset.shape[0]
+        permutation = np.random.permutation(sample_count)
+        for step in range(int(np.ceil(sample_count / batch_size))):
+            offset_start = step * batch_size
+            offset_end = min(offset_start + batch_size, sample_count)
+            x = dataset.ix[permutation[offset_start:offset_end], 1:]
+            y = dataset.ix[permutation[offset_start:offset_end], 0]
+            yield x, y
 
 
 class PercentalSplitDataset(Dataset):
@@ -203,10 +174,17 @@ class PercentalSplitDataset(Dataset):
         y = cls_index
         return x, y
 
+    @staticmethod
+    def _batch_samples_from_callback(sample_callback, batch_size: int) -> Tuple[np.ndarray, np.ndarray]:
+        batch = [sample_callback() for _ in range(batch_size)]
+        x = np.stack((x for x, y in batch), axis=0)
+        y = np.stack((y for x, y in batch), axis=0)
+        return x, y
+
     def _generate_batch(self, feature_name: str, batch_size: int, random_index_fnc,
                         sample_length: int) -> Tuple[np.ndarray, np.ndarray]:
         gen_sample = lambda: self._generate_sample(feature_name, random_index_fnc, sample_length)
-        return batch_samples_from_callback(gen_sample, batch_size)
+        return self._batch_samples_from_callback(gen_sample, batch_size)
 
     def data_generator(self, dataset: str, batch_size: int, sample_length: int = None, feature_name: str = None,
                        loop: bool = False, **kwargs) -> Iterable[Tuple[np.ndarray, np.ndarray]]:

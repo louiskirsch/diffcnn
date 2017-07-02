@@ -19,20 +19,18 @@ def create_session() -> tf.Session:
     return session
 
 
-def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path,
-             feature_name: str):
+def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
 
     with create_session() as session:
 
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
 
-        # Some datasets have even fewer samples than batch_size
+        batch_size = model.batch_size
         if dataset.test_sample_count:
-            model.batch_size = min(model.batch_size, dataset.test_sample_count)
+            batch_size = min(batch_size, dataset.test_sample_count)
 
-        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
-                                                       sample_length=model.sample_length)
+        test_sample_generator = dataset.data_generator('test', batch_size)
 
         sample_total_count = 0
         correct_total_count = 0
@@ -64,8 +62,7 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         return accuracy
 
 
-def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_name: str,
-                  heatmap_save_path: Path = None):
+def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, heatmap_save_path: Path = None):
     import matplotlib.colors
     import matplotlib.pyplot as plt
 
@@ -75,8 +72,7 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, feature_
 
         model.restore(session, checkpoint_dir)
 
-        test_sample_generator = dataset.data_generator('test', model.batch_size, feature_name=feature_name, loop=False,
-                                                       sample_length=model.sample_length)
+        test_sample_generator = dataset.data_generator('test', model.batch_size)
 
         reconstructions = []
 
@@ -156,130 +152,218 @@ class ReduceLROnPlateau:
             self.best = loss
 
 
-def train(model: Model, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-          steps_per_checkpoint: int, feature_name: str, checkpoint_written_callback: Callable,
-          summary_every_step: bool, save: bool = True):
+class TrainingResult:
 
+    def __init__(self):
+        self.best_item = None
+
+    def update(self, training_loss: float, training_accuracy: float, test_loss: float, test_accuracy: float):
+        if self.best_item is None or self.best_item[0] > training_loss:
+            self.best_item = (training_loss, training_accuracy, test_loss, test_accuracy)
+
+    @property
+    def best_test_accuracy(self):
+        return self.best_item[3]
+
+    @property
+    def best_test_loss(self):
+        return self.best_item[2]
+
+
+def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path, log_dir_train: Path,
+          log_dir_test: Path, steps_per_checkpoint: int, checkpoint_written_callback: Callable,
+          summary_every_step: bool, save: bool = True) -> TrainingResult:
+
+    batch_size = model.batch_size
+    if dataset.train_sample_count:
+       batch_size = min(batch_size, dataset.train_sample_count // 10)
+
+    result = TrainingResult()
     with create_session() as session:
 
         model.restore_or_create(session, checkpoint_dir)
-        model.setup_summary_writer(session, log_dir)
-
-        train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
-                                                        sample_length=model.sample_length, loop=True)
-        train_sample_iterator = iter(train_sample_generator)
+        train_writer = tf.summary.FileWriter(str(log_dir_train))
+        test_writer = tf.summary.FileWriter(str(log_dir_test))
 
         plateau_reducer = ReduceLROnPlateau(model.default_learning_rate)
+        global_step = 0
 
-        for train_step in range(step_count):
-            is_checkpoint_step = (train_step + 1) % steps_per_checkpoint == 0
-            input, labels = next(train_sample_iterator)
-            feed_dict = {
-                model.input: input,
-                model.labels: labels,
-                model.learning_rate: plateau_reducer.learning_rate
-            }
-            if is_checkpoint_step:
-                global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
-                                                                 correct_count=True, update_summary=True)
-                accuracy = correct_count / model.batch_size
-                print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
-                if save:
-                    model.save(session, checkpoint_dir)
-                    logging.info('Model saved')
-                    if checkpoint_written_callback is not None:
-                        # noinspection PyCallingNonCallable
-                        checkpoint_written_callback()
-            else:
-                global_step, loss, _ = model.step(session, feed_dict, loss=True, train=True,
-                                                  update_summary=summary_every_step)
-            # Run roughly every epoch
-            if train_step % (dataset.train_sample_count // model.batch_size) == 0:
-                plateau_reducer.update(loss)
-
-
-def train_and_mutate(model: MutatingCnnModel, dataset: Dataset, step_count: int, checkpoint_dir: Path, log_dir: Path,
-                     plot_dir: Path, steps_per_checkpoint: int, feature_name: str,
-                     checkpoint_written_callback: Callable, render_graph_steps: int,
-                     train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
-                     delete_shrinking_last_node: bool, only_switches_lr: float, checkpoints_after_frozen: int,
-                     freeze_on_shrinking_total_outputs: bool):
-
-    checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
-
-    # Some datasets have even fewer samples than batch_size
-    if dataset.train_sample_count:
-        model.batch_size = min(model.batch_size, dataset.train_sample_count)
-
-    train_sample_generator = dataset.data_generator('train', model.batch_size, feature_name=feature_name,
-                                                    sample_length=model.sample_length, loop=True)
-    train_sample_iterator = iter(train_sample_generator)
-
-    plateau_reducer = ReduceLROnPlateau(model.default_learning_rate)
-    graph_file = plot_dir / 'graph.png'
-    steps_left = step_count
-
-    while steps_left > 0:
-        iterate_step_count = min(steps_left, steps_per_checkpoint)
-        steps_left -= iterate_step_count
-
-        with create_session() as session:
-            model.restore_or_create(session, checkpoint_dir_mutated)
-            model.setup_summary_writer(session, log_dir)
-
-            logging.info('Started training')
-            for step in range(iterate_step_count):
-                input, labels = next(train_sample_iterator)
+        for epoch in range(epoch_count):
+            train_loss = None
+            for x, y in dataset.data_generator('train', batch_size):
+                is_checkpoint_step = (global_step + 1) % steps_per_checkpoint == 0
                 feed_dict = {
-                    model.input: input,
-                    model.labels: labels,
+                    model.input: x,
+                    model.labels: y,
                     model.learning_rate: plateau_reducer.learning_rate
                 }
-                train_only_switches = not model.architecture_frozen and \
-                                      (0.5 - train_only_switches_fraction / 2) * iterate_step_count \
-                                      <= float(step) < \
-                                      (0.5 + train_only_switches_fraction / 2) * iterate_step_count
-                if train_only_switches:
-                    feed_dict[model.learning_rate] = only_switches_lr
-                if step < iterate_step_count - 1:
-                    global_step, loss, _ = model.step(session, feed_dict, loss=True, train=True,
-                                                      update_summary=summary_every_step,
-                                                      train_switches=train_only_switches,
-                                                      train_wo_penalty=model.architecture_frozen)
-                else:
-                    global_step, loss, _, correct_count = model.step(session, feed_dict, loss=True, train=True,
-                                                                     correct_count=True, update_summary=True,
-                                                                     train_switches=train_only_switches,
-                                                                     train_wo_penalty=model.architecture_frozen)
-                    accuracy = correct_count / model.batch_size
-                    print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, loss, accuracy * 100))
+                update_summary = is_checkpoint_step or summary_every_step
+                global_step, train_loss, _, train_accuracy = model.step(session, feed_dict, loss=True, train=True,
+                                                                        accuracy=True,
+                                                                        update_summary=update_summary,
+                                                                        alternative_summary_writer=train_writer)
+                if is_checkpoint_step:
+                    print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, train_loss,
+                                                                                train_accuracy * 100))
+                    if save:
+                        model.save(session, checkpoint_dir)
+                        logging.info('Model saved')
+                        if checkpoint_written_callback is not None:
+                            # noinspection PyCallingNonCallable
+                            checkpoint_written_callback()
 
-                    model.save(session, checkpoint_dir)
+                feed_dict[model.input], feed_dict[model.labels] = dataset.test_data
+                global_step, test_loss, test_accuracy = model.step(session, feed_dict, loss=True, accuracy=True,
+                                                                   update_summary=update_summary,
+                                                                   alternative_summary_writer=test_writer)
+                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+
+            plateau_reducer.update(train_loss)
+    return result
+
+
+class MutationTrainer:
+
+    def __init__(self, model: MutatingCnnModel, dataset: Dataset, checkpoint_dir: Path, log_dir_train: Path,
+                 log_dir_test: Path, plot_dir: Path, steps_per_checkpoint: int,
+                 render_graph_steps: int,
+                 train_only_switches_fraction: float, summary_every_step: bool, freeze_on_delete: bool,
+                 delete_shrinking_last_node: bool, only_switches_lr: float, epochs_after_frozen: int,
+                 freeze_on_shrinking_total_outputs: bool):
+        self.model = model
+        self.dataset = dataset
+        self.checkpoint_dir = checkpoint_dir
+        self.checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
+        self.log_dir_test = log_dir_test
+        self.log_dir_train = log_dir_train
+        self.plot_dir = plot_dir
+        self.steps_per_checkpoint = steps_per_checkpoint
+        self.render_graph_steps = render_graph_steps
+        self.train_only_switches_fraction = train_only_switches_fraction
+        self.summary_every_step = summary_every_step
+        self.freeze_on_delete =freeze_on_delete
+        self.delete_shrinking_last_node = delete_shrinking_last_node
+        self.only_switches_lr = only_switches_lr
+        self.epochs_after_frozen = epochs_after_frozen
+        self.freeze_on_shrinking_total_outputs = freeze_on_shrinking_total_outputs
+
+        self.session = None
+        self.train_writer = None
+        self.test_writer = None
+        self.epochs_left = 0
+
+        self.batch_size = model.batch_size
+        if dataset.train_sample_count:
+            self.batch_size = min(self.batch_size, dataset.train_sample_count // 10)
+
+    def _restart_session(self):
+        if self.session is not None:
+            self.session.close()
+        new_session = create_session()
+        # TODO first load probably must be non mutated version
+        self.model.restore_or_create(new_session, self.checkpoint_dir_mutated)
+        self.train_writer = tf.summary.FileWriter(str(self.log_dir_train))
+        self.test_writer = tf.summary.FileWriter(str(self.log_dir_test))
+        self.session = new_session
+
+    def _close_session(self):
+        self.session.close()
+        self.session = None
+        self.train_writer = None
+        self.test_writer = None
+
+    def _mutate(self):
+        architecture_frozen_previously = self.model.architecture_frozen
+        self.model.mutate(self.session, self.freeze_on_delete, self.delete_shrinking_last_node,
+                          self.freeze_on_shrinking_total_outputs)
+        logging.info('Model mutated')
+        if self.model.architecture_frozen and not architecture_frozen_previously and self.epochs_after_frozen != -1:
+            # Stop training soon
+            self.epochs_left = self.epochs_after_frozen
+        self.model.save(self.session, self.checkpoint_dir_mutated)
+        logging.info('Model saved')
+        self._close_session()
+        self.model.build()
+        logging.info('Model rebuilt')
+        self._restart_session()
+
+    def train(self, epoch_count: int, checkpoint_written_callback: Callable = None) -> TrainingResult:
+
+        result = TrainingResult()
+        plateau_reducer = ReduceLROnPlateau(self.model.default_learning_rate)
+        graph_file = self.plot_dir / 'graph.png'
+        global_step = 0
+        self.epochs_left = epoch_count
+        self._restart_session()
+
+        while self.epochs_left > 0:
+            self.epochs_left -= 1
+            train_loss = None
+            for x, y in self.dataset.data_generator('train', self.batch_size):
+                is_checkpoint_step = (global_step + 1) % self.steps_per_checkpoint == 0
+                checkpoint_progress = (global_step % self.steps_per_checkpoint) / self.steps_per_checkpoint
+                feed_dict = {
+                    self.model.input: x,
+                    self.model.labels: y,
+                    self.model.learning_rate: plateau_reducer.learning_rate
+                }
+                train_only_switches = not self.model.architecture_frozen and \
+                                      (0.5 - self.train_only_switches_fraction / 2) \
+                                      <= checkpoint_progress < \
+                                      (0.5 + self.train_only_switches_fraction / 2)
+                if train_only_switches:
+                    feed_dict[self.model.learning_rate] = self.only_switches_lr
+
+                update_summary = is_checkpoint_step or self.summary_every_step
+                step_result = self.model.step(self.session,
+                                              feed_dict,
+                                              loss=True,
+                                              train=True,
+                                              accuracy=True,
+                                              update_summary=update_summary,
+                                              alternative_summary_writer=self.train_writer,
+                                              train_switches=train_only_switches,
+                                              train_wo_penalty=self.model.architecture_frozen)
+                global_step, train_loss, _, train_accuracy = step_result
+
+                feed_dict[self.model.input], feed_dict[self.model.labels] = self.dataset.test_data
+                global_step, test_loss, test_accuracy = self.model.step(self.session,
+                                                                        feed_dict,
+                                                                        loss=True,
+                                                                        accuracy=True,
+                                                                        update_summary=update_summary,
+                                                                        alternative_summary_writer=self.test_writer)
+                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+
+                if is_checkpoint_step:
+                    print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step,
+                                                                                train_loss,
+                                                                                train_accuracy * 100))
+                    print('[Test ] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step,
+                                                                                test_loss,
+                                                                                test_accuracy * 100))
+                    print('[Test ] Best {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step,
+                                                                                result.best_test_loss,
+                                                                                result.best_test_accuracy * 100))
+
+                    self.model.save(self.session, self.checkpoint_dir)
                     logging.info('Model saved')
                     if checkpoint_written_callback is not None:
                         # noinspection PyCallingNonCallable
                         checkpoint_written_callback()
 
-                    architecture_frozen_previously = model.architecture_frozen
-                    model.mutate(session, freeze_on_delete, delete_shrinking_last_node,
-                                 freeze_on_shrinking_total_outputs)
-                    logging.info('Model mutated')
-                    if model.architecture_frozen and not architecture_frozen_previously:
-                        # Stop training soon
-                        steps_left = checkpoints_after_frozen * steps_per_checkpoint
-                    model.save(session, checkpoint_dir_mutated)
-                    logging.info('Model saved')
-                if render_graph_steps and step % render_graph_steps == 0:
-                    model.render_graph(session, render_file=graph_file)
+                    if not self.model.architecture_frozen:
+                        self._mutate()
+
+                if self.render_graph_steps and global_step % self.render_graph_steps == 0:
+                    self.model.render_graph(self.session, render_file=graph_file)
                     with graph_file.open(mode='rb') as f:
                         graph_bytes = f.read()
                     img_summary = tf.Summary.Image(encoded_image_string=graph_bytes)
                     summary = tf.Summary(value=[tf.Summary.Value(tag='graph_rendering', image=img_summary)])
-                    model.summary_writer.add_summary(summary, global_step)
-                # Run roughly every epoch
-                if global_step % (dataset.train_sample_count // model.batch_size) == 0:
-                    plateau_reducer.update(loss)
+                    self.train_writer.add_summary(summary, global_step)
 
-        model.build()
-        logging.info('Model rebuilt')
+            plateau_reducer.update(train_loss)
 
+        self._close_session()
+        return result

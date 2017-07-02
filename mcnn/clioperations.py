@@ -68,7 +68,7 @@ def _evaluate_with_result(options) -> float:
         eval_model = create_fcn(eval_dataset, options)
     else:
         eval_model = create_mutating_cnn(eval_dataset, options)
-    return operations.evaluate(eval_model, eval_dataset, options.checkpoint_dir, options.log_dir_test, feature_name='')
+    return operations.evaluate(eval_model, eval_dataset, options.checkpoint_dir, options.log_dir_test)
 
 
 def evaluate(options):
@@ -85,8 +85,7 @@ def visualize(options):
     else:
         model = create_mutating_cnn(dataset, options)
     heatmap_save_path = options.plot_dir / 'heatmap.pdf'
-    operations.visualize_lrp(model, dataset, options.checkpoint_dir,
-                             feature_name='', heatmap_save_path=heatmap_save_path)
+    operations.visualize_lrp(model, dataset, options.checkpoint_dir, heatmap_save_path=heatmap_save_path)
 
 
 def train(options):
@@ -100,36 +99,36 @@ def train(options):
 
     if options.use_fcn_architecture:
         model = create_fcn(dataset, options)
-        operations.train(model,
-                         dataset,
-                         step_count=options.step_count,
-                         checkpoint_dir=options.checkpoint_dir,
-                         log_dir=options.log_dir_train,
-                         steps_per_checkpoint=options.steps_per_checkpoint,
-                         feature_name='',
-                         checkpoint_written_callback=evaluate_process,
-                         summary_every_step=options.summary_every_step,
-                         save=True)
+        result = operations.train(model,
+                                  dataset,
+                                  epoch_count=options.epoch_count,
+                                  checkpoint_dir=options.checkpoint_dir,
+                                  log_dir_train=options.log_dir_train,
+                                  log_dir_test=options.log_dir_test,
+                                  steps_per_checkpoint=options.steps_per_checkpoint,
+                                  checkpoint_written_callback=None,
+                                  summary_every_step=options.summary_every_step,
+                                  save=True)
     else:
         model = create_mutating_cnn(dataset, options)
-        operations.train_and_mutate(model,
-                                    dataset,
-                                    step_count=options.step_count,
-                                    checkpoint_dir=options.checkpoint_dir,
-                                    log_dir=options.log_dir_train,
-                                    plot_dir=options.plot_dir,
-                                    steps_per_checkpoint=options.steps_per_checkpoint,
-                                    feature_name='',
-                                    checkpoint_written_callback=evaluate_process,
-                                    render_graph_steps=options.render_graph_steps,
-                                    train_only_switches_fraction=options.train_only_switches_fraction,
-                                    only_switches_lr=options.only_switches_learning_rate,
-                                    summary_every_step=options.summary_every_step,
-                                    freeze_on_delete=options.freeze_on_delete,
-                                    delete_shrinking_last_node=options.delete_shrinking_last_node,
-                                    checkpoints_after_frozen=options.checkpoints_after_frozen,
-                                    freeze_on_shrinking_total_outputs=options.freeze_on_shrinking_total_outputs)
+        trainer = operations.MutationTrainer(model,
+                                             dataset,
+                                             checkpoint_dir=options.checkpoint_dir,
+                                             log_dir_train=options.log_dir_train,
+                                             log_dir_test=options.log_dir_test,
+                                             plot_dir=options.plot_dir,
+                                             steps_per_checkpoint=options.steps_per_checkpoint,
+                                             render_graph_steps=options.render_graph_steps,
+                                             train_only_switches_fraction=options.train_only_switches_fraction,
+                                             only_switches_lr=options.only_switches_learning_rate,
+                                             summary_every_step=options.summary_every_step,
+                                             freeze_on_delete=options.freeze_on_delete,
+                                             delete_shrinking_last_node=options.delete_shrinking_last_node,
+                                             epochs_after_frozen=options.epochs_after_frozen,
+                                             freeze_on_shrinking_total_outputs=options.freeze_on_shrinking_total_outputs)
+        result = trainer.train(options.epoch_count)
+
+    print('Test accuracy {} with minimum train loss'.format(result.best_test_accuracy))
 
     if options.write_result_file is not None:
-        accuracy = _evaluate_with_result(options)
-        _write_results(options.dataset_name, options.write_result_file, accuracy)
+        _write_results(options.dataset_name, options.write_result_file, result.best_test_accuracy)
