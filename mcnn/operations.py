@@ -19,6 +19,42 @@ def create_session() -> tf.Session:
     return session
 
 
+def _evaluate_in_session(session: tf.Session, model: Model, dataset: Dataset) -> Tuple[int, float, float, tf.Summary]:
+
+    batch_size = model.batch_size
+    if dataset.test_sample_count:
+        batch_size = min(batch_size, dataset.test_sample_count)
+
+    test_sample_generator = dataset.data_generator('test', batch_size)
+
+    sample_total_count = 0
+    correct_total_count = 0
+    batches_count = 0
+    loss_sum = 0
+    global_step = 0
+
+    for input, labels in test_sample_generator:
+        feed_dict = {
+            model.input: input,
+            model.labels: labels
+        }
+        global_step, test_loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True)
+        sample_total_count += input.shape[0]
+        correct_total_count += correct_count
+        batches_count += 1
+        loss_sum += test_loss
+
+    test_accuracy = correct_total_count / sample_total_count
+    testing_error = 1 - test_accuracy
+    test_loss = loss_sum / batches_count
+    test_summary = tf.Summary()
+    test_summary.value.add(tag='evaluation/accuracy', simple_value=test_accuracy)
+    test_summary.value.add(tag='evaluation/testing_error', simple_value=testing_error)
+    test_summary.value.add(tag='training/loss', simple_value=test_loss)
+
+    return global_step, test_loss, test_accuracy, test_summary
+
+
 def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path):
 
     with create_session() as session:
@@ -26,36 +62,7 @@ def evaluate(model: Model, dataset: Dataset, checkpoint_dir: Path, log_dir: Path
         model.restore(session, checkpoint_dir)
         model.setup_summary_writer(session, log_dir)
 
-        batch_size = model.batch_size
-        if dataset.test_sample_count:
-            batch_size = min(batch_size, dataset.test_sample_count)
-
-        test_sample_generator = dataset.data_generator('test', batch_size)
-
-        sample_total_count = 0
-        correct_total_count = 0
-        batches_count = 0
-        loss_sum = 0
-        global_step = None
-
-        for input, labels in test_sample_generator:
-            feed_dict = {
-                model.input: input,
-                model.labels: labels
-            }
-            global_step, loss, correct_count = model.step(session, feed_dict, loss=True, correct_count=True)
-            sample_total_count += input.shape[0]
-            correct_total_count += correct_count
-            batches_count += 1
-            loss_sum += loss
-
-        accuracy = correct_total_count / sample_total_count
-        testing_error = 1 - accuracy
-        loss = loss_sum / batches_count
-        summary = tf.Summary()
-        summary.value.add(tag='evaluation/accuracy', simple_value=accuracy)
-        summary.value.add(tag='evaluation/testing_error', simple_value=testing_error)
-        summary.value.add(tag='training/loss', simple_value=loss)
+        global_step, loss, accuracy, summary = _evaluate_in_session(session, model, dataset)
         model.summary_writer.add_summary(summary, global_step)
 
         print('[Test] Loss {:.2f} Accuracy {:.2f}%'.format(loss, accuracy * 100))
@@ -212,10 +219,9 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                             # noinspection PyCallingNonCallable
                             checkpoint_written_callback()
 
-                feed_dict[model.input], feed_dict[model.labels] = dataset.test_data
-                global_step, test_loss, test_accuracy = model.step(session, feed_dict, loss=True, accuracy=True,
-                                                                   update_summary=update_summary,
-                                                                   alternative_summary_writer=test_writer)
+                global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
+                if update_summary:
+                    test_writer.add_summary(test_summary, global_step)
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
 
             plateau_reducer.update(train_loss)
@@ -334,15 +340,8 @@ class MutationTrainer:
                 global_step, train_loss, _, train_accuracy = step_result[:4]
                 train_summary = self._parse_summary(step_result[-1]) if update_summary else None
 
-                feed_dict[self.model.input], feed_dict[self.model.labels] = self.dataset.test_data
-                step_result = self.model.step(self.session,
-                                              feed_dict,
-                                              loss=True,
-                                              accuracy=True,
-                                              return_summary=update_summary,
-                                              alternative_summary_writer=self.test_writer)
-                global_step, test_loss, test_accuracy = step_result[:3]
-                test_summary = self._parse_summary(step_result[-1]) if update_summary else None
+                step_result = _evaluate_in_session(self.session, self.model, self.dataset)
+                global_step, test_loss, test_accuracy, test_summary = step_result
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
 
                 if self.render_graph_steps and global_step % self.render_graph_steps == 0:
