@@ -168,6 +168,9 @@ class TrainingResult:
         if self.best_item is None or self.best_item[0] > training_loss:
             self.best_item = (training_loss, training_accuracy, test_loss, test_accuracy)
 
+    def clear(self):
+        self.best_item = None
+
     @property
     def best_test_accuracy(self):
         return self.best_item[3]
@@ -283,12 +286,14 @@ class MutationTrainer:
         self.train_writer = None
         self.test_writer = None
 
-    def _mutate(self):
+    def _mutate(self, result: TrainingResult):
         architecture_frozen_previously = self.model.architecture_frozen
         self.model.mutate(self.session, self.freeze_on_delete, self.delete_shrinking_last_node,
                           self.freeze_on_shrinking_total_outputs)
         logging.info('Model mutated')
         if self.model.architecture_frozen and not architecture_frozen_previously and self.epochs_after_frozen != -1:
+            # Only keep results after freezing
+            result.clear()
             # Stop training soon
             self.epochs_left = self.epochs_after_frozen
         self.model.save(self.session, self.checkpoint_dir_mutated)
@@ -381,7 +386,7 @@ class MutationTrainer:
                         checkpoint_written_callback()
 
                     if not self.model.architecture_frozen:
-                        self._mutate()
+                        self._mutate(result)
 
             # Evaluate at end of epoch
             if not is_summary_step:
