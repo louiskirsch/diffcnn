@@ -126,22 +126,22 @@ def visualize_lrp(model: Model, dataset: Dataset, checkpoint_dir: Path, heatmap_
         plt.close()
 
 
-class ReduceLROnPlateau:
+class ReduceOnPlateau:
 
-    def __init__(self, initial_learning_rate: float, factor: float = 0.5, patience: int = 50,
-                 min_lr: float = 1e-4, threshold_epsilon: float = 1e-4):
-        self.learning_rate = initial_learning_rate
+    def __init__(self, tf_var: tf.Variable, factor: float = 0.5, patience: int = 50,
+                 min_value: float = 1e-4, threshold_epsilon: float = 1e-4):
+        self.tf_var = tf_var
         self.factor = factor
         self.patience = patience
-        self.min_lr = min_lr
+        self.min_value = min_value
         self.threshold_epsilon = threshold_epsilon
-        self.lr_epsilon = self.min_lr * 1e-4
+        self.value_epsilon = self.min_value * 1e-4
         self.best = None
         self.wait = 0
 
-    def update(self, loss: float):
-        # TODO actually we should store the learning rate in a tf variable to reuse on restart
-        if self.learning_rate < self.min_lr + self.lr_epsilon:
+    def update(self, session: tf.Session, loss: float):
+        value = self.tf_var.eval(session=session)
+        if value < self.min_value + self.value_epsilon:
             return
         if self.best is not None:
             if loss < self.best - self.threshold_epsilon:
@@ -149,10 +149,9 @@ class ReduceLROnPlateau:
                 self.wait = 0
             else:
                 if self.wait >= self.patience:
-                    new_lr = self.learning_rate * self.factor
-                    new_lr = max(new_lr, self.min_lr)
-                    logging.info('Setting learning rate to {}'.format(new_lr))
-                    self.learning_rate = new_lr
+                    new_value = value * self.factor
+                    new_value = max(new_value, self.min_value)
+                    self.tf_var.assign(new_value).op.run(session=session)
                     self.wait = 0
                 self.wait += 1
         else:
@@ -195,7 +194,7 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
         train_writer = tf.summary.FileWriter(str(log_dir_train))
         test_writer = tf.summary.FileWriter(str(log_dir_test))
 
-        plateau_reducer = ReduceLROnPlateau(model.default_learning_rate)
+        plateau_reducer = ReduceOnPlateau(model.learning_rate)
         global_step = 0
 
         for epoch in range(epoch_count):
@@ -207,8 +206,7 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                 is_summary_step = (global_step + 1) % steps_per_summary == 0
                 feed_dict = {
                     model.input: x,
-                    model.labels: y,
-                    model.learning_rate: plateau_reducer.learning_rate
+                    model.labels: y
                 }
                 global_step, train_loss, _, train_accuracy = model.step(session, feed_dict, loss=True, train=True,
                                                                         accuracy=True,
@@ -232,7 +230,7 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
             if not is_summary_step:
                 global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
-            plateau_reducer.update(train_loss)
+            plateau_reducer.update(session, train_loss)
 
         train_writer.add_graph(session.graph, global_step=global_step)
     return result
@@ -312,7 +310,8 @@ class MutationTrainer:
     def train(self, epoch_count: int, checkpoint_written_callback: Callable = None) -> TrainingResult:
 
         result = TrainingResult()
-        plateau_reducer = ReduceLROnPlateau(self.model.default_learning_rate)
+        lr_plateau_reducer = ReduceOnPlateau(self.model.learning_rate)
+        penalty_plateau_reducer = ReduceOnPlateau(self.model.penalty_factor, min_value=1e-4, patience=100)
         graph_file = self.plot_dir / 'graph.png'
         global_step = 0
         self.epochs_left = epoch_count
@@ -329,8 +328,7 @@ class MutationTrainer:
                 checkpoint_progress = (global_step % self.steps_per_checkpoint) / self.steps_per_checkpoint
                 feed_dict = {
                     self.model.input: x,
-                    self.model.labels: y,
-                    self.model.learning_rate: plateau_reducer.learning_rate
+                    self.model.labels: y
                 }
                 train_only_switches = not self.model.architecture_frozen and \
                                       (0.5 - self.train_only_switches_fraction / 2) \
@@ -387,13 +385,16 @@ class MutationTrainer:
 
                     if not self.model.architecture_frozen:
                         self._mutate(result)
+                        lr_plateau_reducer.tf_var = self.model.learning_rate
+                        penalty_plateau_reducer.tf_var = self.model.penalty_factor
 
             # Evaluate at end of epoch
             if not is_summary_step:
                 step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                 global_step, test_loss, test_accuracy, test_summary = step_result
                 result.update(train_loss, train_accuracy, test_loss, test_accuracy)
-            plateau_reducer.update(train_loss)
+            lr_plateau_reducer.update(self.session, train_loss)
+            penalty_plateau_reducer.update(self.session, train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)
         self._close_session()

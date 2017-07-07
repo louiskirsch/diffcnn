@@ -42,7 +42,8 @@ class Model:
         self.input = tf.placeholder(tf.float32, shape=(None, self.sample_length), name='input')
         self.dynamic_batch_size = tf.shape(self.input)[0]
         self.labels = tf.placeholder(tf.int64, shape=(None,), name='labels')
-        self.learning_rate = tf.placeholder_with_default(self.default_learning_rate, shape=[], name='learning_rate')
+        self.learning_rate = tf.Variable(self.default_learning_rate, trainable=False,
+                                         dtype=tf.float32, name='learning_rate')
 
         input_2d = tf.reshape(self.input, shape=(self.dynamic_batch_size, 1, self.sample_length, 1))
 
@@ -63,6 +64,7 @@ class Model:
             return tf.group(*tf.get_collection(self.POST_TRAINING_UPDATE_COLLECTION))
 
     def _define_training(self):
+        tf.summary.scalar('learning_rate', self.learning_rate)
         cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=self.labels, logits=self.logits,
                                                                        name='crossentropy')
         self.loss = self._define_loss(cross_entropy)
@@ -928,7 +930,7 @@ class MutatingCnnModel(Model):
         self.node_mutate_configuration = node_mutate_configuration or NodeMutationConfiguration()
         self.architecture_frozen = False
         self.depth_frozen = False
-        self.penalty_factor = penalty_factor
+        self.default_penalty_factor = penalty_factor
         self.new_layer_penalty_multiplier = new_layer_penalty_multiplier
 
         super().__init__(sample_length, learning_rate, num_classes, batch_size)
@@ -992,6 +994,8 @@ class MutatingCnnModel(Model):
         self.init = tf.group(self.init, tf.variables_initializer(tf.get_collection(self.VOLATILE_VARIABLES)))
 
     def _define_loss(self, cross_entropy: tf.Tensor) -> tf.Tensor:
+        self.penalty_factor = tf.Variable(self.default_penalty_factor, trainable=False, dtype=tf.float32)
+        tf.summary.scalar('penalty_factor', self.penalty_factor)
         self.cross_entropy = super()._define_loss(cross_entropy)
         tf.summary.scalar('cross_entropy', self.cross_entropy)
         nodes = self.input_node.all_descendants()
