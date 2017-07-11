@@ -1108,15 +1108,17 @@ class MutatingCnnModel(Model):
 
         return logits
 
-    def step(self, session: tf.Session, feed_dict: Dict, loss=False, train=False, logits=False, correct_count=False,
-             accuracy=False, update_summary=False, return_summary=False, train_switches=False, train_wo_penalty=False,
-             alternative_summary_writer: tf.summary.FileWriter = None):
+    def step(self, session: tf.Session, feed_dict: Dict, loss=False, cross_entropy=False, train=False, logits=False,
+             correct_count=False, accuracy=False, update_summary=False, return_summary=False, train_switches=False,
+             train_wo_penalty=False, alternative_summary_writer: tf.summary.FileWriter = None):
         feed_dict[self.is_training] = train or train_switches or train_wo_penalty
         feed_dict[self.dropout_enabled] = (train or train_wo_penalty) and not train_switches
         output_feed = [self.global_step]
 
         if loss:
             output_feed.append(self.loss)
+        if cross_entropy:
+            output_feed.append(self.cross_entropy)
         # Only apply a single training mode
         if train_switches:
             output_feed.append(self.train_scales_op)

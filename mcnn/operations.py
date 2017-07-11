@@ -208,10 +208,10 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                     model.input: x,
                     model.labels: y
                 }
-                global_step, train_loss, _, train_accuracy = model.step(session, feed_dict, loss=True, train=True,
-                                                                        accuracy=True,
-                                                                        update_summary=is_summary_step,
-                                                                        alternative_summary_writer=train_writer)
+                step_result = model.step(session, feed_dict, loss=True, train=True, accuracy=True,
+                                         update_summary=is_summary_step, alternative_summary_writer=train_writer)
+                global_step, train_loss, _, train_accuracy = step_result
+
                 if is_checkpoint_step:
                     print('[Train] Step {} Loss {:.2f} Accuracy {:.2f}%'.format(global_step, train_loss,
                                                                                 train_accuracy * 100))
@@ -247,8 +247,6 @@ class MutationTrainer:
         self.dataset = dataset
         self.checkpoint_dir = checkpoint_dir
         self.checkpoint_dir_mutated = checkpoint_dir.with_name(checkpoint_dir.name + '_mutated')
-        self.log_dir_test = log_dir_test
-        self.log_dir_train = log_dir_train
         self.plot_dir = plot_dir
         self.steps_per_checkpoint = steps_per_checkpoint
         self.steps_per_summary = steps_per_summary
@@ -259,9 +257,10 @@ class MutationTrainer:
         self.epochs_after_frozen = epochs_after_frozen
         self.freeze_on_shrinking_total_outputs = freeze_on_shrinking_total_outputs
 
+        self.train_writer = tf.summary.FileWriter(str(log_dir_train))
+        self.test_writer = tf.summary.FileWriter(str(log_dir_test))
+
         self.session = None
-        self.train_writer = None
-        self.test_writer = None
         self.epochs_left = 0
 
         self.batch_size = model.batch_size
@@ -274,15 +273,11 @@ class MutationTrainer:
         new_session = create_session()
         # TODO first load probably must be non mutated version
         self.model.restore_or_create(new_session, self.checkpoint_dir_mutated)
-        self.train_writer = tf.summary.FileWriter(str(self.log_dir_train))
-        self.test_writer = tf.summary.FileWriter(str(self.log_dir_test))
         self.session = new_session
 
     def _close_session(self):
         self.session.close()
         self.session = None
-        self.train_writer = None
-        self.test_writer = None
 
     def _mutate(self, result: TrainingResult):
         architecture_frozen_previously = self.model.architecture_frozen
@@ -320,6 +315,7 @@ class MutationTrainer:
         while self.epochs_left > 0:
             self.epochs_left -= 1
             train_loss = None
+            train_ce = None
             train_accuracy = None
             is_summary_step = None
             for x, y in self.dataset.data_generator('train', self.batch_size):
@@ -340,13 +336,14 @@ class MutationTrainer:
                 step_result = self.model.step(self.session,
                                               feed_dict,
                                               loss=True,
+                                              cross_entropy=True,
                                               train=True,
                                               accuracy=True,
                                               return_summary=is_summary_step,
                                               alternative_summary_writer=self.train_writer,
                                               train_switches=train_only_switches,
                                               train_wo_penalty=self.model.architecture_frozen)
-                global_step, train_loss, _, train_accuracy = step_result[:4]
+                global_step, train_loss, train_ce, _, train_accuracy = step_result[:5]
                 train_summary = self._parse_summary(step_result[-1]) if is_summary_step else None
 
                 if is_summary_step:
@@ -358,7 +355,7 @@ class MutationTrainer:
 
                     step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                     global_step, test_loss, test_accuracy, test_summary = step_result
-                    result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+                    result.update(train_ce, train_accuracy, test_loss, test_accuracy)
 
                     test_summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
                     test_summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
@@ -392,10 +389,12 @@ class MutationTrainer:
             if not is_summary_step:
                 step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                 global_step, test_loss, test_accuracy, test_summary = step_result
-                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+                result.update(train_ce, train_accuracy, test_loss, test_accuracy)
             lr_plateau_reducer.update(self.session, train_loss)
             penalty_plateau_reducer.update(self.session, train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)
+        self.train_writer.flush()
+        self.test_writer.flush()
         self._close_session()
         return result
