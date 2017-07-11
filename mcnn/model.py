@@ -566,6 +566,10 @@ class VariableNode(Node):
     def output_count(self):
         return self._output_count
 
+    def query_active_output_count(self, session: tf.Session):
+        inactive_count = self._below_del_threshold_count.eval(session=session)
+        return self.output_count - inactive_count
+
     def _concat_outputs_to_var(self, var: tf.Variable, concat: tf.Tensor) -> tf.Operation:
         new_value = tf.concat([var, concat], axis=-1)
         self._override_shape(var, new_value.shape)
@@ -968,7 +972,8 @@ class MutatingCnnModel(Model):
                 self.architecture_frozen = True
                 return
 
-        if not self.depth_frozen and last_node.output_count >= VariableNode.INITIAL_OUTPUT_COUNT:
+        last_node_active_outputs = last_node.query_active_output_count(session)
+        if not self.depth_frozen and last_node_active_outputs >= VariableNode.INITIAL_OUTPUT_COUNT:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.penalty_multiplier = 1
             new_node = last_node.create_new_node(session, self.optimizer)
