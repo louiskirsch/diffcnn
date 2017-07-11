@@ -306,7 +306,6 @@ class MutationTrainer:
 
         result = TrainingResult()
         lr_plateau_reducer = ReduceOnPlateau(self.model.learning_rate)
-        penalty_plateau_reducer = ReduceOnPlateau(self.model.penalty_factor, min_value=1e-4, patience=100)
         graph_file = self.plot_dir / 'graph.png'
         global_step = 0
         self.epochs_left = epoch_count
@@ -383,7 +382,6 @@ class MutationTrainer:
                     if not self.model.architecture_frozen:
                         self._mutate(result)
                         lr_plateau_reducer.tf_var = self.model.learning_rate
-                        penalty_plateau_reducer.tf_var = self.model.penalty_factor
 
             # Evaluate at end of epoch
             if not is_summary_step:
@@ -391,7 +389,6 @@ class MutationTrainer:
                 global_step, test_loss, test_accuracy, test_summary = step_result
                 result.update(train_ce, train_accuracy, test_loss, test_accuracy)
             lr_plateau_reducer.update(self.session, train_loss)
-            penalty_plateau_reducer.update(self.session, train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)
         self.train_writer.flush()
