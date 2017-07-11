@@ -6,7 +6,7 @@ from pathlib import Path
 
 import mcnn.operations as operations
 from mcnn.model import McnnModel, McnnConfiguration, Model, MutatingCnnModel, NodeBuildConfiguration, \
-    NodeMutationConfiguration, FCNModel
+    NodeMutationConfiguration, FCNModel, ConvNodeCreateConfiguration
 from mcnn.samples import HorizontalDataset, Dataset, AugmentedDataset
 
 
@@ -40,9 +40,11 @@ def create_mutating_cnn(dataset: Dataset, options) -> MutatingCnnModel:
                              architecture_dir=options.architecture_dir,
                              penalty_factor=options.penalty_factor,
                              new_layer_penalty_multiplier=options.new_layer_penalty_multiplier,
+                             initial_depth=options.initial_depth,
                              use_fully_connected=options.use_fully_connected,
                              node_build_configuration=NodeBuildConfiguration.from_options(options),
-                             node_mutate_configuration=NodeMutationConfiguration.from_options(options))
+                             node_mutate_configuration=NodeMutationConfiguration.from_options(options),
+                             conv_node_create_configuration=ConvNodeCreateConfiguration.from_options(options))
     model.architecture_frozen = options.freeze
     return model
 

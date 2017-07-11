@@ -181,6 +181,20 @@ class McnnConfiguration:
         self.layer_size = layer_size
 
 
+class ConvNodeCreateConfiguration:
+
+    def __init__(self, initial_output_count: int = 16, stride: int = 1, kernel_size: int = 16):
+        self.initial_output_count = initial_output_count
+        self.stride = stride
+        self.kernel_size = kernel_size
+
+    @classmethod
+    def from_options(cls, options) -> 'ConvNodeCreateConfiguration':
+        config = ConvNodeCreateConfiguration()
+        config.initial_output_count = options.initial_output_count
+        return config
+
+
 class NodeBuildConfiguration:
 
     def __init__(self):
@@ -218,6 +232,7 @@ class NodeMutationConfiguration:
     def from_options(cls, options) -> 'NodeMutationConfiguration':
         config = cls()
         config.minimum_outputs = options.minimum_outputs
+        config.output_increment = options.output_increment
         config.allow_node_deletion = options.allow_node_deletion
         return config
 
@@ -411,8 +426,6 @@ class InputNode(Node):
 class VariableNode(Node):
 
     SCALE_COLLECTION = 'SCALE_COLLECTION'
-
-    INITIAL_OUTPUT_COUNT = 16
 
     def __init__(self, parents: List, non_linearity: bool = True, force_batch_normalize: bool = False):
         super().__init__(parents)
@@ -851,13 +864,14 @@ class ConvNode(VariableNode):
 
     NEW_NODE_PROBABILITY = 0.1
 
-    def __init__(self, parents: List, fixed_output_channel_count: int = None, non_linearity: bool = True,
-                 stride: int = None, kernel_size: int = 16, force_batch_normalize: bool = False):
+    def __init__(self, parents: List, config: ConvNodeCreateConfiguration, fixed_output_channel_count: int = None,
+                 non_linearity: bool = True, force_batch_normalize: bool = False):
         super().__init__(parents, non_linearity, force_batch_normalize)
         self.can_mutate = fixed_output_channel_count is None
-        self.stride = stride or 1
-        self.kernel_size = kernel_size
-        self._output_count = fixed_output_channel_count or self.INITIAL_OUTPUT_COUNT
+        self.stride = config.stride
+        self.kernel_size = config.kernel_size
+        self._output_count = fixed_output_channel_count or config.initial_output_count
+        self.creation_config = config
 
     @property
     def label(self) -> str:
@@ -892,7 +906,7 @@ class ConvNode(VariableNode):
 
     def create_new_node(self, session: tf.Session, optimizer: tf.train.Optimizer) -> 'ConvNode':
         old_children = list(self.children)
-        new_conv = ConvNode([self])
+        new_conv = ConvNode([self], self.creation_config)
         for child in old_children:
             child.add_parent(new_conv)
         new_conv._notify_output_addition(session, optimizer, new_conv.output_count)
@@ -912,23 +926,27 @@ class MutatingCnnModel(Model):
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
                  architecture_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
-                 probabilistic_depth_strategy: bool = False, use_fully_connected: bool = True,
+                 initial_depth: int, probabilistic_depth_strategy: bool = False, use_fully_connected: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None,
-                 node_mutate_configuration: NodeMutationConfiguration = None):
+                 node_mutate_configuration: NodeMutationConfiguration = None,
+                 conv_node_create_configuration: ConvNodeCreateConfiguration = None):
 
+        self.conv_create_config = conv_node_create_configuration or ConvNodeCreateConfiguration()
         nodes_file = (architecture_dir / 'nodes.pickle')
         if nodes_file.exists():
             with nodes_file.open('rb') as infile:
                 self.input_node, self.terminus_node = pickle.load(infile)
         else:
             self.input_node = InputNode()
-            first_conv_node = ConvNode([self.input_node])
+            node = self.input_node
+            for _ in range(initial_depth):
+                node = ConvNode([node], self.conv_create_config)
             if use_fully_connected:
-                self.terminus_node = FullyConnectedNode([first_conv_node], fixed_output_count=num_classes,
+                self.terminus_node = FullyConnectedNode([node], fixed_output_count=num_classes,
                                                         non_linearity=False)
             else:
-                self.terminus_node = ConvNode([first_conv_node], fixed_output_channel_count=num_classes,
-                                              non_linearity=False)
+                self.terminus_node = ConvNode([node], self.conv_create_config,
+                                              fixed_output_channel_count=num_classes, non_linearity=False)
 
         self.probabilistic_depth_strategy = probabilistic_depth_strategy
         self.output_count_history = deque(maxlen=3)
@@ -973,7 +991,7 @@ class MutatingCnnModel(Model):
                 return
 
         last_node_active_outputs = last_node.query_active_output_count(session)
-        if not self.depth_frozen and last_node_active_outputs >= VariableNode.INITIAL_OUTPUT_COUNT:
+        if not self.depth_frozen and last_node_active_outputs >= self.conv_create_config.initial_output_count:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.penalty_multiplier = 1
             new_node = last_node.create_new_node(session, self.optimizer)
@@ -1149,12 +1167,14 @@ class FCNModel(Model):
 
         self.input_node = InputNode()
         self.input_node.uuid = '1'
-        node = ConvNode([self.input_node], fixed_output_channel_count=128, stride=1, kernel_size=8,
+        node = ConvNode([self.input_node], ConvNodeCreateConfiguration(kernel_size=8), fixed_output_channel_count=128,
                         force_batch_normalize=True)
         node.uuid = '2'
-        node = ConvNode([node], fixed_output_channel_count=256, stride=1, kernel_size=5, force_batch_normalize=True)
+        node = ConvNode([node], ConvNodeCreateConfiguration(kernel_size=5), fixed_output_channel_count=256,
+                        force_batch_normalize=True)
         node.uuid = '3'
-        node = ConvNode([node], fixed_output_channel_count=128, stride=1, kernel_size=3, force_batch_normalize=True)
+        node = ConvNode([node], ConvNodeCreateConfiguration(kernel_size=3), fixed_output_channel_count=128,
+                        force_batch_normalize=True)
         node.uuid = '4'
         self.terminus_node = FullyConnectedNode([node], fixed_output_count=num_classes, non_linearity=False)
         self.terminus_node.uuid = '5'

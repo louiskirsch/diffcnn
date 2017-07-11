@@ -81,6 +81,12 @@ class CLI:
                                  help='Whether to generate additional summaries.')
         base_parser.add_argument('--no-layer-deletion', dest='allow_node_deletion', action='store_false',
                                  help='Disable the deletion of layers.')
+        base_parser.add_argument('--initial-output-count', dest='initial_output_count', type=int, default=16,
+                                 help='The number of outputs a layer is created with. Defaults to 16.')
+        base_parser.add_argument('--output-increment', dest='output_increment', type=int, default=16,
+                                 help='The number of outputs to add to a layer if growth is required.')
+        base_parser.add_argument('--initial-depth', dest='initial_depth', type=int, default=1,
+                                 help='The initial number of convolutional layers of the architecture.')
         return base_parser
 
     def _add_training_parser(self):
