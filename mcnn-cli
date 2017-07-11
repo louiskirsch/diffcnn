@@ -79,6 +79,8 @@ class CLI:
                                  help='Use the fixed FCN architecture instead of the mutating CNN.')
         base_parser.add_argument('--verbose-summary', dest='verbose_summary', action='store_true',
                                  help='Whether to generate additional summaries.')
+        base_parser.add_argument('--no-layer-deletion', dest='allow_node_deletion', action='store_false',
+                                 help='Disable the deletion of layers.')
         return base_parser
 
     def _add_training_parser(self):

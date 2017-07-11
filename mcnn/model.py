@@ -212,11 +212,13 @@ class NodeMutationConfiguration:
         self.minimum_outputs = 10
         self.output_increment = 16
         self.allow_node_creation = False
+        self.allow_node_deletion = True
 
     @classmethod
     def from_options(cls, options) -> 'NodeMutationConfiguration':
         config = cls()
         config.minimum_outputs = options.minimum_outputs
+        config.allow_node_deletion = options.allow_node_deletion
         return config
 
 
@@ -471,7 +473,7 @@ class VariableNode(Node):
     def shrink(self, session: tf.Session, optimizer: tf.train.Optimizer, deletion_indices: np.ndarray,
                config: NodeMutationConfiguration):
         active_outputs = self.output_count - deletion_indices.shape[0] - config.outputs_below_del_threshold
-        if active_outputs < config.minimum_outputs:
+        if active_outputs < config.minimum_outputs and config.allow_node_deletion:
             self.delete(session, optimizer)
         else:
             self._remove_outputs(session, optimizer, deletion_indices)
