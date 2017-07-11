@@ -42,12 +42,12 @@ class CLI:
         base_parser.add_argument('--no-fully-connected', dest='use_fully_connected', action='store_false',
                                  help='Do not add a fully connected layer before the softmax.')
         base_parser.add_argument('--depth-penalty', dest='depth_penalty', choices=['exponential', 'linear', 'none'],
-                                 default='none', help='The depth penalty to apply.')
+                                 default='exponential', help='The depth penalty to apply.')
         # Miconi paper used linear
         base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
                                  default='weigend', help='The penalty function to apply.')
         # Miconi paper used 1e-4
-        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-3,
+        base_parser.add_argument('--penalty-factor', dest='penalty_factor', type=float, default=1e-4,
                                  help='The penalty factor in the loss function.')
         # Miconi paper used 0.05
         base_parser.add_argument('--neuron-del-thres', dest='neuron_deletion_threshold', type=float, default=0.05,
@@ -67,7 +67,7 @@ class CLI:
                                  help='Enable dropout on input with the given keep probability. '
                                       'Set to 0 to disable. Default is disabled.')
         base_parser.add_argument('--new-layer-penalty-multiplier', dest='new_layer_penalty_multiplier', type=float,
-                                 default=10.0, help='The penalty multiplier for newly created layers.')
+                                 default=1.0, help='The penalty multiplier for newly created layers.')
         base_parser.add_argument('--minimum-outputs', dest='minimum_outputs', type=int, default=1,
                                  help='The minimum outputs a layer requires to not be deleted.')
         base_parser.add_argument('--frozen-epochs', dest='epochs_after_frozen', type=int, default=-1,
