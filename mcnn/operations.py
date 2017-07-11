@@ -1,4 +1,4 @@
-from collections import deque
+from collections import deque, namedtuple
 from pathlib import Path
 from typing import Callable, Tuple
 
@@ -160,23 +160,33 @@ class ReduceOnPlateau:
 
 class TrainingResult:
 
+    ResultItem = namedtuple('ResultItem', ['training_loss',
+                                           'training_accuracy',
+                                           'test_loss',
+                                           'test_accuracy',
+                                           'step'])
+
     def __init__(self):
         self.best_item = None
 
-    def update(self, training_loss: float, training_accuracy: float, test_loss: float, test_accuracy: float):
-        if self.best_item is None or self.best_item[0] > training_loss:
-            self.best_item = (training_loss, training_accuracy, test_loss, test_accuracy)
+    def update(self, training_loss: float, training_accuracy: float, test_loss: float, test_accuracy: float, step: int):
+        if self.best_item is None or self.best_item.training_loss > training_loss:
+            self.best_item = self.ResultItem(training_loss, training_accuracy, test_loss, test_accuracy, step)
 
     def clear(self):
         self.best_item = None
 
     @property
     def best_test_accuracy(self):
-        return self.best_item[3]
+        return self.best_item.test_accuracy
+
+    @property
+    def best_step(self):
+        return self.best_item.step
 
     @property
     def best_test_loss(self):
-        return self.best_item[2]
+        return self.best_item.test_loss
 
 
 def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path, log_dir_train: Path,
@@ -225,11 +235,11 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
                 if is_summary_step:
                     global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
                     test_writer.add_summary(test_summary, global_step)
-                    result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+                    result.update(train_loss, train_accuracy, test_loss, test_accuracy, global_step)
 
             if not is_summary_step:
                 global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
-                result.update(train_loss, train_accuracy, test_loss, test_accuracy)
+                result.update(train_loss, train_accuracy, test_loss, test_accuracy, global_step)
             plateau_reducer.update(session, train_loss)
 
         train_writer.add_graph(session.graph, global_step=global_step)
@@ -242,7 +252,7 @@ class MutationTrainer:
                  log_dir_test: Path, plot_dir: Path, steps_per_checkpoint: int, steps_per_summary: int,
                  train_only_switches_fraction: float, freeze_on_delete: bool,
                  delete_shrinking_last_node: bool, only_switches_lr: float, epochs_after_frozen: int,
-                 freeze_on_shrinking_total_outputs: bool):
+                 freeze_on_shrinking_total_outputs: bool, stagnant_abort_steps: int):
         self.model = model
         self.dataset = dataset
         self.checkpoint_dir = checkpoint_dir
@@ -256,6 +266,7 @@ class MutationTrainer:
         self.only_switches_lr = only_switches_lr
         self.epochs_after_frozen = epochs_after_frozen
         self.freeze_on_shrinking_total_outputs = freeze_on_shrinking_total_outputs
+        self.stagnant_abort_steps = stagnant_abort_steps
 
         self.train_writer = tf.summary.FileWriter(str(log_dir_train))
         self.test_writer = tf.summary.FileWriter(str(log_dir_test))
@@ -354,7 +365,7 @@ class MutationTrainer:
 
                     step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                     global_step, test_loss, test_accuracy, test_summary = step_result
-                    result.update(train_ce, train_accuracy, test_loss, test_accuracy)
+                    result.update(train_ce, train_accuracy, test_loss, test_accuracy, global_step)
 
                     test_summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
                     test_summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
@@ -387,7 +398,10 @@ class MutationTrainer:
             if not is_summary_step:
                 step_result = _evaluate_in_session(self.session, self.model, self.dataset)
                 global_step, test_loss, test_accuracy, test_summary = step_result
-                result.update(train_ce, train_accuracy, test_loss, test_accuracy)
+                result.update(train_ce, train_accuracy, test_loss, test_accuracy, global_step)
+            # Abort training if stagnant
+            if self.stagnant_abort_steps > 0 and global_step >= result.best_step + self.stagnant_abort_steps:
+                self.epochs_left = 0
             lr_plateau_reducer.update(self.session, train_loss)
 
         self.train_writer.add_graph(self.session.graph, global_step=global_step)

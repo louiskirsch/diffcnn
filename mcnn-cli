@@ -102,6 +102,9 @@ class CLI:
         training_parser.add_argument('--freeze-on-total-shrinking', dest='freeze_on_shrinking_total_outputs',
                                      action='store_true',
                                      help='Whether to freeze architecture when total number of outputs falls again.')
+        training_parser.add_argument('--stagnant-abort', dest='stagnant_abort_steps', type=int, default=0,
+                                     help='Abort if best cross entropy does not improve within the given steps.'
+                                          'Defaults to 0 (disabled).')
         self._extend_training_and_eval_options(training_parser)
 
     @staticmethod

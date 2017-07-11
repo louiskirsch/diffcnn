@@ -124,7 +124,8 @@ def train(options):
                                              freeze_on_delete=options.freeze_on_delete,
                                              delete_shrinking_last_node=options.delete_shrinking_last_node,
                                              epochs_after_frozen=options.epochs_after_frozen,
-                                             freeze_on_shrinking_total_outputs=options.freeze_on_shrinking_total_outputs)
+                                             freeze_on_shrinking_total_outputs=options.freeze_on_shrinking_total_outputs,
+                                             stagnant_abort_steps=options.stagnant_abort_steps)
         result = trainer.train(options.epoch_count)
 
     print('Test accuracy {} with minimum train loss'.format(result.best_test_accuracy))
