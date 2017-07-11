@@ -99,12 +99,16 @@ class CLI:
                                      help='Whether to delete the previous run before starting this one.')
         training_parser.add_argument('--delete-shrinking', dest='delete_shrinking_last_node', action='store_true',
                                      help='Whether to delete the deepest node when it is shrinking.')
+        training_parser.add_argument('--freeze', dest='freeze', action='store_true',
+                                     help='Freeze the architecture right from the beginning on.')
         training_parser.add_argument('--freeze-on-total-shrinking', dest='freeze_on_shrinking_total_outputs',
                                      action='store_true',
                                      help='Whether to freeze architecture when total number of outputs falls again.')
         training_parser.add_argument('--stagnant-abort', dest='stagnant_abort_steps', type=int, default=0,
                                      help='Abort if best cross entropy does not improve within the given steps.'
                                           'Defaults to 0 (disabled).')
+        training_parser.add_argument('--load-architecture', dest='load_architecture', type=str, default=None,
+                                     help='Load the architecture from the given run name.')
         self._extend_training_and_eval_options(training_parser)
 
     @staticmethod
@@ -169,6 +173,12 @@ class CLI:
         parsed.plot_dir /= parsed.run_name
         parsed.log_dir_train = parsed.log_dir / (parsed.run_name + '_train')
         parsed.log_dir_test = parsed.log_dir / (parsed.run_name + '_test')
+
+        if 'load_architecture' in parsed and parsed.load_architecture:
+            load_architecture = parsed.dataset_name + '_' + parsed.load_architecture
+            parsed.architecture_dir = parsed.checkpoint_dir.with_name(load_architecture)
+        else:
+            parsed.architecture_dir = parsed.checkpoint_dir
 
         return parsed
 

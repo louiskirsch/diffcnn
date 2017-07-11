@@ -37,12 +37,13 @@ def create_mutating_cnn(dataset: Dataset, options) -> MutatingCnnModel:
                              num_classes=dataset.target_classes_count,
                              learning_rate=options.learning_rate,
                              sample_length=dataset.sample_length,
-                             checkpoint_dir=options.checkpoint_dir,
+                             architecture_dir=options.architecture_dir,
                              penalty_factor=options.penalty_factor,
                              new_layer_penalty_multiplier=options.new_layer_penalty_multiplier,
                              use_fully_connected=options.use_fully_connected,
                              node_build_configuration=NodeBuildConfiguration.from_options(options),
                              node_mutate_configuration=NodeMutationConfiguration.from_options(options))
+    model.architecture_frozen = options.freeze
     return model
 
 

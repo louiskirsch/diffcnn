@@ -911,12 +911,12 @@ class MutatingCnnModel(Model):
     VOLATILE_VARIABLES = 'VOLATILE_VARIABLES'
 
     def __init__(self, sample_length: int, learning_rate: float, num_classes: int, batch_size: int,
-                 checkpoint_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
+                 architecture_dir: Path, penalty_factor: float, new_layer_penalty_multiplier: float,
                  probabilistic_depth_strategy: bool = False, use_fully_connected: bool = True,
                  node_build_configuration: NodeBuildConfiguration = None,
                  node_mutate_configuration: NodeMutationConfiguration = None):
 
-        nodes_file = (checkpoint_dir / 'nodes.pickle')
+        nodes_file = (architecture_dir / 'nodes.pickle')
         if nodes_file.exists():
             with nodes_file.open('rb') as infile:
                 self.input_node, self.terminus_node = pickle.load(infile)
