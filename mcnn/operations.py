@@ -234,8 +234,12 @@ def train(model: Model, dataset: Dataset, epoch_count: int, checkpoint_dir: Path
 
                 if is_summary_step:
                     global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
-                    test_writer.add_summary(test_summary, global_step)
                     result.update(train_loss, train_accuracy, test_loss, test_accuracy, global_step)
+
+                    test_summary.value.add(tag='evaluation/best_accuracy', simple_value=result.best_test_accuracy)
+                    test_summary.value.add(tag='evaluation/best_loss', simple_value=result.best_test_loss)
+
+                    test_writer.add_summary(test_summary, global_step)
 
             if not is_summary_step:
                 global_step, test_loss, test_accuracy, test_summary = _evaluate_in_session(session, model, dataset)
