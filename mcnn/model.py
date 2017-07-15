@@ -968,6 +968,7 @@ class MutatingCnnModel(Model):
         variable_nodes = [node for node in nodes if isinstance(node, VariableNode)]
         last_node = self.max_depth_mutatable_conv_node
         last_node_outputs_before = last_node.output_count
+        last_node_active_outputs = last_node.query_active_output_count(session)
         total_outputs_before = self.total_output_count
 
         with tf.variable_scope(self._nodes_scope):
@@ -990,7 +991,6 @@ class MutatingCnnModel(Model):
                 self.architecture_frozen = True
                 return
 
-        last_node_active_outputs = last_node.query_active_output_count(session)
         if not self.depth_frozen and last_node_active_outputs >= self.conv_create_config.initial_output_count:
             logging.info('Create new node at last_node with depth {}'.format(last_node.max_depth))
             last_node.penalty_multiplier = 1
