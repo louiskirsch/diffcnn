@@ -42,7 +42,7 @@ class CLI:
         base_parser.add_argument('--no-fully-connected', dest='use_fully_connected', action='store_false',
                                  help='Do not add a fully connected layer before the softmax.')
         base_parser.add_argument('--depth-penalty', dest='depth_penalty', choices=['exponential', 'linear', 'none'],
-                                 default='exponential', help='The depth penalty to apply.')
+                                 default='linear', help='The depth penalty to apply.')
         # Miconi paper used linear
         base_parser.add_argument('--penalty-fnc', dest='penalty_fnc', choices=['linear', 'weigend'],
                                  default='weigend', help='The penalty function to apply.')
@@ -81,9 +81,9 @@ class CLI:
                                  help='Whether to generate additional summaries.')
         base_parser.add_argument('--no-layer-deletion', dest='allow_node_deletion', action='store_false',
                                  help='Disable the deletion of layers.')
-        base_parser.add_argument('--initial-output-count', dest='initial_output_count', type=int, default=16,
-                                 help='The number of outputs a layer is created with. Defaults to 16.')
-        base_parser.add_argument('--output-increment', dest='output_increment', type=int, default=16,
+        base_parser.add_argument('--initial-output-count', dest='initial_output_count', type=int, default=64,
+                                 help='The number of outputs a layer is created with. Defaults to 64.')
+        base_parser.add_argument('--output-increment', dest='output_increment', type=int, default=64,
                                  help='The number of outputs to add to a layer if growth is required.')
         base_parser.add_argument('--initial-depth', dest='initial_depth', type=int, default=1,
                                  help='The initial number of convolutional layers of the architecture.')
